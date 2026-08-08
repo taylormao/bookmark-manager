@@ -1,0 +1,39 @@
+# 构建产物
+/build/
+/build-*/
+/dist/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+.ninja_*
+
+# 编译产物
+*.o
+*.obj
+*.exe
+*.dll
+*.a
+*.lib
+*.so
+*.dylib
+
+# 图分析输出
+/graphify-out/
+
+# 测试临时数据库
+test_*.sqlite
+test_*.sqlite-wal
+test_*.sqlite-shm
+test_backups/
+Testing/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 运行数据
+*.db
+*.db-wal
+*.db-shm
