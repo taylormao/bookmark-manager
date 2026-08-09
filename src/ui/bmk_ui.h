@@ -17,6 +17,22 @@ G_BEGIN_DECLS
 
 typedef struct _BmkWindow BmkWindow;
 
+/* 书签列表模型列序（FR-20 第 2 条；self-test 与主窗口共享）。 */
+enum {
+    COL_SELECTED,      /* gboolean */
+    COL_ICON,          /* GdkPaintable* 可为 NULL */
+    COL_TITLE,         /* gchararray */
+    COL_URL,
+    COL_CATEGORY,
+    COL_TAGS,
+    COL_VALID_TEXT,
+    COL_VALID_DOT,
+    COL_STATUS_TEXT,
+    COL_CREATED_TEXT,
+    COL_ID,            /* gint64 */
+    N_LIST_COLS
+};
+
 /* 主窗口上下文：贯穿所有界面模块。 */
 struct _BmkWindow {
     GtkApplication *app;
@@ -68,6 +84,10 @@ struct _BmkWindow {
 
     /* 缓存：分类 id -> 名称路径，供列表渲染 */
     GHashTable     *category_paths;
+
+    /* 选择同步护栏：程序化操作高亮/复选框时置位，
+     * 抑制 selection-changed 触发重复全量同步（FR-13）。 */
+    gboolean        sel_guard;
 };
 
 /* ---- 主窗口 ---- */

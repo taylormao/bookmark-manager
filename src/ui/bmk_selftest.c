@@ -184,6 +184,26 @@ static void select_list_row(SelfTest *st, gint row)
     gtk_tree_selection_select_iter(sel, &it);
 }
 
+/* 向当前高亮选择追加第 row 行（模拟 Ctrl+点击多选，FR-13）。 */
+static void select_list_row_append(SelfTest *st, gint row)
+{
+    GtkTreeSelection *sel =
+        gtk_tree_view_get_selection(GTK_TREE_VIEW(st->w->list_view));
+    GtkTreeModel *m = GTK_TREE_MODEL(st->w->list_store);
+    GtkTreeIter it;
+    if (!gtk_tree_model_get_iter_first(m, &it)) return;
+    for (gint i = 0; i < row; i++) gtk_tree_model_iter_next(m, &it);
+    gtk_tree_selection_select_iter(sel, &it);
+}
+
+/* 清空高亮选择（模拟点击空白处取消选择）。 */
+static void select_list_clear(SelfTest *st)
+{
+    GtkTreeSelection *sel =
+        gtk_tree_view_get_selection(GTK_TREE_VIEW(st->w->list_view));
+    gtk_tree_selection_unselect_all(sel);
+}
+
 /* 检查动作是否已注册（GTK4 窗口动作映射，等价于“按钮存在”）。 */
 static gboolean action_exists(SelfTest *st, const char *name)
 {
@@ -522,7 +542,65 @@ static gboolean step_import_export(SelfTest *st)
     return G_SOURCE_REMOVE;
 }
 
-/* S12 删除网址（win.delete 动作 + 确认框 + 备份生成） */
+/* S12 选择逻辑（FR-13：单选/多选/清除 + 高亮↔复选框镜像）
+ * 验证：高亮选择为唯一权威，bmk_window_selected_ids 返回一致；清除后为空。
+ * 注意：列表按添加时间降序排列，断言一律从 list_store 实际读取行 ID，
+ * 不依赖具体行序假设。 */
+static gboolean step_selection(SelfTest *st)
+{
+    gint rows = list_rows(st);
+    if (rows < 2) {
+        record(st, "selection-logic", FALSE, "need >=2 rows");
+        return G_SOURCE_REMOVE;
+    }
+
+    /* 读取第 0、1 行在 list_store 中的真实 ID */
+    GtkTreeModel *m = GTK_TREE_MODEL(st->w->list_store);
+    GtkTreeIter it0, it1;
+    gint64 row0_id = 0, row1_id = 0;
+    if (!gtk_tree_model_get_iter_first(m, &it0)) {
+        record(st, "selection-logic", FALSE, "no rows");
+        return G_SOURCE_REMOVE;
+    }
+    gtk_tree_model_get(m, &it0, COL_ID, &row0_id, -1);
+    it1 = it0;
+    gtk_tree_model_iter_next(m, &it1);
+    gtk_tree_model_get(m, &it1, COL_ID, &row1_id, -1);
+
+    gboolean ok = TRUE;
+    char detail[256];
+
+    /* 1) 单选：仅第 0 行 → 恰好 1 个 id，且等于第 0 行 ID */
+    select_list_row(st, 0);
+    gint64 *ids = NULL;
+    gsize n = bmk_window_selected_ids(st->w, &ids);
+    ok = ok && (n == 1);
+    ok = ok && (n == 1 && ids[0] == row0_id);
+
+    /* 2) 多选：追加第 1 行（Ctrl+点击）→ 2 个 id，且包含两行 */
+    select_list_row_append(st, 1);
+    g_free(ids); ids = NULL;
+    n = bmk_window_selected_ids(st->w, &ids);
+    ok = ok && (n == 2);
+    ok = ok && (n == 2 &&
+                 ((ids[0] == row0_id && ids[1] == row1_id) ||
+                  (ids[0] == row1_id && ids[1] == row0_id)));
+
+    /* 3) 清除（点击空白）→ 0 个 id */
+    select_list_clear(st);
+    g_free(ids); ids = NULL;
+    n = bmk_window_selected_ids(st->w, &ids);
+    ok = ok && (n == 0);
+
+    g_snprintf(detail, sizeof detail,
+               "single=1 multi=2 clear=0 (row0=%lld row1=%lld)",
+               (long long)row0_id, (long long)row1_id);
+    g_free(ids);
+    record(st, "selection-logic", ok, ok ? detail : "selection ids mismatch");
+    return G_SOURCE_REMOVE;
+}
+
+/* S13 删除网址（win.delete 动作 + 确认框 + 备份生成） */
 static gboolean step_delete(SelfTest *st)
 {
     gint64 before = db_count(st);
@@ -573,6 +651,7 @@ static const StepDef STEPS[] = {
     { step_proxy,         0    },
     { step_sync,          0    },
     { step_import_export, 0    },
+    { step_selection,     0    },
     { step_delete,        0    },
 };
 

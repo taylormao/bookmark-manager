@@ -17,20 +17,7 @@
 #include <string.h>
 
 /* 列表模型列序 */
-enum {
-    COL_SELECTED,      /* gboolean */
-    COL_ICON,          /* GdkPaintable* 可为 NULL */
-    COL_TITLE,         /* gchararray */
-    COL_URL,
-    COL_CATEGORY,
-    COL_TAGS,
-    COL_VALID_TEXT,
-    COL_VALID_DOT,
-    COL_STATUS_TEXT,
-    COL_CREATED_TEXT,
-    COL_ID,            /* gint64 */
-    N_LIST_COLS
-};
+/* 列表模型列序定义在 bmk_ui.h（COL_*，self-test 共享）。 */
 
 /* 左树模型列序 */
 enum {
@@ -413,34 +400,50 @@ gsize bmk_window_selected_ids(BmkWindow *w, gint64 **out)
     GtkTreeModel *m = GTK_TREE_MODEL(w->list_store);
     GtkTreeIter it;
 
-    /* 优先取复选框勾选项；没有勾选时退回到高亮行。 */
-    if (gtk_tree_model_get_iter_first(m, &it)) {
-        do {
-            gboolean sel = FALSE;
+    /* 唯一权威：高亮选择（GtkTreeSelection，支持单选/Ctrl/Shift 多选/框选）。
+     * 复选框列仅是它的镜像（见 sync_selection_to_checks），不再单独读取，
+     * 避免两套状态不同步导致操作对象错乱（FR-13）。 */
+    GtkTreeSelection *sel =
+        gtk_tree_view_get_selection(GTK_TREE_VIEW(w->list_view));
+    GList *rows = gtk_tree_selection_get_selected_rows(sel, NULL);
+    for (GList *l = rows; l; l = l->next) {
+        if (gtk_tree_model_get_iter(m, &it, (GtkTreePath *)l->data)) {
             gint64 id = 0;
-            gtk_tree_model_get(m, &it, COL_SELECTED, &sel, COL_ID, &id, -1);
-            if (sel) g_array_append_val(ids, id);
-        } while (gtk_tree_model_iter_next(m, &it));
-    }
-
-    if (ids->len == 0) {
-        GtkTreeSelection *sel =
-            gtk_tree_view_get_selection(GTK_TREE_VIEW(w->list_view));
-        GList *rows = gtk_tree_selection_get_selected_rows(sel, NULL);
-        for (GList *l = rows; l; l = l->next) {
-            if (gtk_tree_model_get_iter(m, &it, (GtkTreePath *)l->data)) {
-                gint64 id = 0;
-                gtk_tree_model_get(m, &it, COL_ID, &id, -1);
-                g_array_append_val(ids, id);
-            }
+            gtk_tree_model_get(m, &it, COL_ID, &id, -1);
+            g_array_append_val(ids, id);
         }
-        g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
     }
+    g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
 
     gsize n = ids->len;
     *out = (gint64 *)g_array_free(ids, n == 0);
     if (n == 0) *out = NULL;
     return n;
+}
+
+/* 把当前高亮选择同步到复选框列（镜像）。selection-changed 时调用，
+ * 使复选框永远反映高亮选择；sel_guard 置位时跳过（程序化批量操作）。 */
+static void sync_selection_to_checks(BmkWindow *w)
+{
+    if (w->sel_guard) return;
+    GtkTreeModel *m = GTK_TREE_MODEL(w->list_store);
+    GtkTreeSelection *sel =
+        gtk_tree_view_get_selection(GTK_TREE_VIEW(w->list_view));
+    GtkTreeIter it;
+    if (!gtk_tree_model_get_iter_first(m, &it)) return;
+    do {
+        GtkTreePath *p = gtk_tree_model_get_path(m, &it);
+        gboolean on = gtk_tree_selection_path_is_selected(sel, p);
+        gtk_list_store_set(w->list_store, &it, COL_SELECTED, on, -1);
+        gtk_tree_path_free(p);
+    } while (gtk_tree_model_iter_next(m, &it));
+}
+
+static void on_list_selection_changed(GtkTreeSelection *sel, gpointer user)
+{
+    (void)sel;
+    BmkWindow *w = user;
+    sync_selection_to_checks(w);
 }
 
 /* ------------------------------------------------------------------ */
@@ -522,13 +525,18 @@ static void on_select_toggled(GtkCellRendererToggle *cr, char *path_str, gpointe
 {
     (void)cr;
     BmkWindow *w = user;
-    GtkTreeIter it;
     GtkTreePath *path = gtk_tree_path_new_from_string(path_str);
-    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(w->list_store), &it, path)) {
-        gboolean sel = FALSE;
-        gtk_tree_model_get(GTK_TREE_MODEL(w->list_store), &it, COL_SELECTED, &sel, -1);
-        gtk_list_store_set(w->list_store, &it, COL_SELECTED, !sel, -1);
-    }
+    GtkTreeSelection *sel =
+        gtk_tree_view_get_selection(GTK_TREE_VIEW(w->list_view));
+
+    /* 复选框点击 ↔ 高亮选择联动：该行选中则取消，未选中则加入。
+     * 选择变更会触发 selection-changed → sync_selection_to_checks，
+     * 自动回写复选框镜像（两套状态永不脱节，FR-13）。 */
+    if (gtk_tree_selection_path_is_selected(sel, path))
+        gtk_tree_selection_unselect_path(sel, path);
+    else
+        gtk_tree_selection_select_path(sel, path);
+
     gtk_tree_path_free(path);
 }
 
@@ -552,32 +560,23 @@ static void on_row_activated(GtkTreeView *tv, GtkTreePath *path,
 
 /* ---- 框选（FR-13 第 1 条：GtkGestureDrag） ---- */
 
-static void clear_all_checked(BmkWindow *w)
-{
-    GtkTreeModel *m = GTK_TREE_MODEL(w->list_store);
-    GtkTreeIter it;
-    if (gtk_tree_model_get_iter_first(m, &it)) {
-        do {
-            gtk_list_store_set(w->list_store, &it, COL_SELECTED, FALSE, -1);
-        } while (gtk_tree_model_iter_next(m, &it));
-    }
-}
-
 static void marquee_select_range(BmkWindow *w, int start_idx, int end_idx)
 {
     GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(w->list_view));
-    gtk_tree_selection_unselect_all(sel);
 
     int lo = MIN(start_idx, end_idx);
     int hi = MAX(start_idx, end_idx);
+
+    /* 拖拽过程中抑制 selection-changed 的全量同步（每帧一次会卡顿），
+     * 由 drag-end 统一回写复选框镜像。 */
+    w->sel_guard = TRUE;
+    gtk_tree_selection_unselect_all(sel);
     for (int i = lo; i <= hi; i++) {
         GtkTreePath *p = gtk_tree_path_new_from_indices(i, -1);
         gtk_tree_selection_select_path(sel, p);
-        GtkTreeIter it;
-        if (gtk_tree_model_get_iter(GTK_TREE_MODEL(w->list_store), &it, p))
-            gtk_list_store_set(w->list_store, &it, COL_SELECTED, TRUE, -1);
         gtk_tree_path_free(p);
     }
+    w->sel_guard = FALSE;
 }
 
 static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer user)
@@ -585,8 +584,6 @@ static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer user)
     BmkWindow *w = user;
     /* 认领本次事件序列：避免 TreeView 自带的点击/切换处理在松手时覆盖框选 */
     gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
-    /* 清除历史勾选，防止多次框选后残留（乱多选根源） */
-    clear_all_checked(w);
 
     int start = 0;   /* 空白处开始视为从第一行开始；无数据时 -1 表示不启用 */
     GtkTreePath *path = NULL;
@@ -622,6 +619,8 @@ static void on_drag_end(GtkGestureDrag *g, double x, double y, gpointer user)
     (void)g; (void)x; (void)y;
     BmkWindow *w = user;
     g_object_set_data_full(G_OBJECT(w->list_view), "marquee-start", NULL, NULL);
+    /* 框选结束：统一回写复选框镜像（拖拽期间被 guard 抑制）。 */
+    sync_selection_to_checks(w);
 }
 
 /* 所选记录的归一化 url_key 是否全部相同（FR-13：合并网址启用条件） */
@@ -839,11 +838,9 @@ static void act_select_all(GSimpleAction *a, GVariant *p, gpointer user)
 {
     (void)a; (void)p;
     BmkWindow *w = user;
-    GtkTreeIter it;
-    if (!gtk_tree_model_get_iter_first(GTK_TREE_MODEL(w->list_store), &it)) return;
-    do {
-        gtk_list_store_set(w->list_store, &it, COL_SELECTED, TRUE, -1);
-    } while (gtk_tree_model_iter_next(GTK_TREE_MODEL(w->list_store), &it));
+    GtkTreeSelection *sel =
+        gtk_tree_view_get_selection(GTK_TREE_VIEW(w->list_view));
+    gtk_tree_selection_select_all(sel);   /* changed → 镜像同步复选框 */
 }
 
 /* ---- 批量操作（FR-13） ---- */
@@ -1606,6 +1603,11 @@ BmkWindow *bmk_window_new(GtkApplication *app, bmk_app *core)
     add_text_column(w, T("col.created"),     COL_CREATED_TEXT, BMK_SORT_CREATED_AT,   140, FALSE);
 
     g_signal_connect(w->list_view, "row-activated", G_CALLBACK(on_row_activated), w);
+
+    /* 高亮选择变化 → 复选框镜像同步（单选/Ctrl/Shift 多选/框选均走此路径，
+     * 复选框列永远反映当前高亮选择，FR-13）。 */
+    g_signal_connect(gtk_tree_view_get_selection(GTK_TREE_VIEW(w->list_view)),
+                     "changed", G_CALLBACK(on_list_selection_changed), w);
 
     /* 框选（FR-13 第 1 条） */
     GtkGesture *dg = gtk_gesture_drag_new();
