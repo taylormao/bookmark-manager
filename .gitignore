@@ -37,3 +37,7 @@ Testing/
 *.db
 *.db-wal
 *.db-shm
+
+# QA 验证临时产物
+qa-*/
+qa-*.txt
