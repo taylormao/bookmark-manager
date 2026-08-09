@@ -5,6 +5,7 @@
  * 按 settings.language 初始化 i18n → 打开主窗口。
  */
 #include "bmk_ui.h"
+#include "bmk_selftest.h"
 
 #include "bmk_settings.h"
 #include "bmk_log.h"
@@ -18,17 +19,23 @@
 #endif
 
 typedef struct {
-    char *data_dir;
+    char    *data_dir;
+    gboolean self_test;
 } CliOpts;
 
 static void parse_args(int argc, char **argv, CliOpts *o, int *out_argc)
 {
     memset(o, 0, sizeof *o);
-    /* 压缩 argv：移除 --data-dir 及其值，避免 GApplication 报未知选项 */
+    /* 压缩 argv：移除 --data-dir / --self-test 及其参数，
+     * 避免 GApplication 报未知选项 */
     int w = 1;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc) {
             o->data_dir = argv[++i];
+            continue;
+        }
+        if (strcmp(argv[i], "--self-test") == 0) {
+            o->self_test = TRUE;
             continue;
         }
         argv[w++] = argv[i];
@@ -60,11 +67,15 @@ static void on_activate(GtkApplication *app, gpointer user)
     bmk_i18n_init(lang);
     free(lang);
 
-    bmk_window_new(app, core);
+    BmkWindow *win = bmk_window_new(app, core);
 
     /* 应用退出时释放核心资源（代理子进程、数据库、日志）。 */
     g_object_set_data_full(G_OBJECT(app), "bmk-core", core,
                            (GDestroyNotify)bmk_app_shutdown);
+
+    /* --self-test：主窗口就绪后在 idle 回调中执行自动化测试序列。 */
+    if (o->self_test)
+        bmk_selftest_run(win);
 }
 
 int main(int argc, char **argv)
@@ -80,11 +91,24 @@ int main(int argc, char **argv)
     int g_argc = argc;
     parse_args(argc, argv, &o, &g_argc);
 
+    /* --self-test 必须配合 --data-dir 使用：测试会写入数据库/备份/日志，
+     * 不允许落到默认数据目录（%APPDATA%\BookmarkManager）污染真实数据。 */
+    if (o.self_test && !o.data_dir) {
+        fprintf(stderr,
+                "[SELFTEST] ERROR: --self-test requires --data-dir <dir> "
+                "(refusing to touch the default data directory)\n");
+        return 2;
+    }
+
     GtkApplication *app = gtk_application_new("local.bmk.BookmarkManager",
                                                G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(app, "activate", G_CALLBACK(on_activate), &o);
 
     int status = g_application_run(G_APPLICATION(app), g_argc, argv);
+
+    /* --self-test 模式下把测试结果映射为进程退出码（0=全过，1=有失败）。 */
+    if (o.self_test && status == 0)
+        status = bmk_selftest_all_passed() ? 0 : 1;
 
     g_object_unref(app);
     return status;

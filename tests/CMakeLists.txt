@@ -35,3 +35,29 @@ if(WIN32)
     add_dependencies(${t} copy_test_runtime_dlls)
   endforeach()
 endif()
+
+# ---- GUI 自动化自测（--self-test）--------------------------------------
+# bmk-gui 仅在 GTK4 可用时构建（根 CMakeLists 按 GTK4_FOUND 决定是否 add_subdirectory）。
+# 用 --data-dir 隔离到独立临时目录；测试退出码 0=全过，1=有失败，与 CTest 语义一致。
+if(TARGET bmk-gui AND WIN32)
+  # bmk-gui 除 core DLL 外还需 GTK/Pango/Cairo 等 DLL（位于 mingw64/bin）。
+  # ENVIRONMENT 里的 $ENV{PATH} 在 configure 时展开，未必包含该目录；
+  # 用 bmk_windows_dll_dir() 推导出 mingw64/bin 并前置到 PATH，避免
+  # Windows 加载器弹“缺少 DLL”模态框导致测试挂起。
+  bmk_windows_dll_dir(_gui_dll_dir)
+  set(_gui_env "PATH=${_gui_dll_dir};$ENV{PATH}")
+  set(_gui_data_dir "${CMAKE_CURRENT_BINARY_DIR}/selftest-data")
+  add_test(NAME gui-selftest
+           COMMAND ${CMAKE_COMMAND}
+                   -DBMK_GUI_EXE=$<TARGET_FILE:bmk-gui>
+                   -DSELFTEST_DATA_DIR=${_gui_data_dir}
+                   -P "${CMAKE_CURRENT_SOURCE_DIR}/run_gui_selftest.cmake")
+  set_tests_properties(gui-selftest PROPERTIES
+    TIMEOUT 120
+    ENVIRONMENT "${_gui_env}")
+  # 保证 GUI 自测所需 core DLL 与 exe 同目录（Windows 优先搜索）
+  bmk_copy_runtime_dlls(copy_gui_selftest_dlls
+    "$<TARGET_FILE_DIR:bmk-gui>"
+    ${BMK_CORE_RUNTIME_DLLS})
+  add_dependencies(copy_gui_selftest_dlls bmk-gui)
+endif()

@@ -1687,9 +1687,12 @@ BmkWindow *bmk_window_new(GtkApplication *app, bmk_app *core)
 
     g_signal_connect(win, "destroy", G_CALLBACK(on_window_destroy), w);
 
-    bmk_window_refresh_all(w);
-    /* GTK4 不会自动显示窗口：显式呈现主窗口 */
+    /* 先呈现窗口再刷新：树视图在 realize 前填充时，GTK 会对每个固定节点
+     * 触发一次 selection-changed（最后一个是“无效”节点），导致 valid_filter
+     * 被错误置为仅显示无效链接，新增书签（valid=UNKNOWN）会从列表消失。
+     * 先 present 使树视图完成 realize，刷新时不再产生这些伪事件。 */
     gtk_window_present(w->window);
+    bmk_window_refresh_all(w);
 
     /* FR-01 第 2 条：损坏恢复提示 */
     if (core->db_recovered)
