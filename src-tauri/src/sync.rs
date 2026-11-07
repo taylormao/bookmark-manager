@@ -74,10 +74,29 @@ pub async fn perform_two_way_sync(db: &Database) -> Result<SyncResult, String> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(25))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+    let proxy_mode = db
+        .get_setting("proxy_mode")
+        .unwrap_or_default()
+        .unwrap_or_else(|| "system".to_string());
+    let proxy_url = db.get_setting("proxy_url").unwrap_or_default();
+    let proxy_cfg = crate::fetch::ProxyConfig {
+        mode: proxy_mode,
+        url: proxy_url,
+    };
+    let client = crate::fetch::build_client_with_proxy(30, Some(&proxy_cfg));
+
+    let format_net_err = |action: &str, e: reqwest::Error| -> String {
+        let err_str = e.to_string();
+        if err_str.contains("SEC_E") || err_str.contains("certificate") || err_str.contains("wrong principal") {
+            format!("{}: SSL/TLS 证书校验失败 ({})。排查提示：若绑定了自定义域名，请确保在 Cloudflare Workers 后台绑定的是【自定义域 (Custom Domains)】而非【路由 (Routes)】，并确认 Cloudflare 已签发有效边缘证书", action, e)
+        } else if err_str.contains("dns") || err_str.contains("resolve") {
+            format!("{}: 域名 DNS 解析失败 ({})。请检查域名拼写或 DNS 记录是否生效", action, e)
+        } else if e.is_timeout() {
+            format!("{}: 请求超时 ({})。请检查网络连通性或当前网络代理设置", action, e)
+        } else {
+            format!("{}: {}", action, e)
+        }
+    };
 
     // 1. 获取本地待推送变更
     let (local_cats, local_bms) = db
@@ -100,7 +119,7 @@ pub async fn perform_two_way_sync(db: &Database) -> Result<SyncResult, String> {
         let res = req
             .send()
             .await
-            .map_err(|e| format!("推送变更至 Cloudflare 失败: {}", e))?;
+            .map_err(|e| format_net_err("推送变更至 Cloudflare 失败", e))?;
 
         if !res.status().is_success() {
             let status = res.status();
@@ -119,7 +138,7 @@ pub async fn perform_two_way_sync(db: &Database) -> Result<SyncResult, String> {
     let res = req
         .send()
         .await
-        .map_err(|e| format!("从 Cloudflare 拉取数据失败: {}", e))?;
+        .map_err(|e| format_net_err("从 Cloudflare 拉取数据失败", e))?;
 
     if !res.status().is_success() {
         let status = res.status();
