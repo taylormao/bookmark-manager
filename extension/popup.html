@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>网络收藏夹助手</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    body {
+      width: 380px;
+      background-color: #f8fafc;
+      color: #1e293b;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    /* 顶部导航 */
+    .header {
+      background: #ffffff;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      font-size: 14px;
+      color: #0f172a;
+    }
+    .brand-icon {
+      width: 24px;
+      height: 24px;
+      background: #2563eb;
+      color: #ffffff;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+    }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      background: #f1f5f9;
+      padding: 3px;
+      border-radius: 8px;
+    }
+    .tab-btn {
+      border: none;
+      background: transparent;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #64748b;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .tab-btn.active {
+      background: #ffffff;
+      color: #2563eb;
+      font-weight: 600;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    }
+    .icon-btn {
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      padding: 4px;
+      color: #64748b;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+    }
+    .icon-btn:hover {
+      background: #f1f5f9;
+      color: #0f172a;
+    }
+
+    /* 视图切换 */
+    .view {
+      display: none;
+      padding: 16px;
+    }
+    .view.active {
+      display: block;
+    }
+
+    /* 表单元素 */
+    .form-group {
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: #64748b;
+      margin-bottom: 4px;
+      letter-spacing: 0.025em;
+    }
+    input[type="text"], input[type="url"], input[type="password"], select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #1e293b;
+      background: #ffffff;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus, select:focus {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 1px #2563eb;
+    }
+    .preview-card {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 10px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .preview-icon {
+      width: 20px;
+      height: 20px;
+      object-contain: contain;
+      border-radius: 4px;
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
+    .preview-content {
+      flex: 1;
+      min-width: 0;
+    }
+    .preview-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #0f172a;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .preview-url {
+      font-size: 11px;
+      color: #94a3b8;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 2px;
+    }
+
+    /* 按钮 */
+    .btn {
+      width: 100%;
+      padding: 9px 14px;
+      border-radius: 8px;
+      border: none;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+    .btn-primary {
+      background: #2563eb;
+      color: #ffffff;
+    }
+    .btn-primary:hover {
+      background: #1d4ed8;
+    }
+    .btn-primary:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .btn-secondary {
+      background: #e2e8f0;
+      color: #334155;
+      margin-top: 8px;
+    }
+    .btn-secondary:hover {
+      background: #cbd5e1;
+    }
+
+    /* 提示信息 */
+    .tip-box {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      color: #1e40af;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 11px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tip-box.warning {
+      background: #fffbeb;
+      border-color: #fde68a;
+      color: #92400e;
+    }
+    .tip-box.success {
+      background: #f0fdf4;
+      border-color: #bbf7d0;
+      color: #166534;
+    }
+
+    /* 检索列表 */
+    .search-input-wrap {
+      position: relative;
+      margin-bottom: 10px;
+    }
+    .search-results {
+      max-height: 280px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .bookmark-item {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 8px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      text-decoration: none;
+      color: inherit;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .bookmark-item:hover {
+      border-color: #93c5fd;
+      background: #f8fafc;
+    }
+    .item-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+    }
+    .item-icon {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+    }
+    .item-title {
+      font-size: 12px;
+      font-weight: 500;
+      color: #1e293b;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .item-cat {
+      font-size: 10px;
+      color: #64748b;
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-left: 6px;
+      flex-shrink: 0;
+    }
+
+    /* 底部状态 */
+    .footer {
+      background: #ffffff;
+      padding: 8px 16px;
+      border-top: 1px solid #e2e8f0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #94a3b8;
+    }
+    .sync-status {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #cbd5e1;
+    }
+    .dot.green {
+      background: #10b981;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <div class="brand-icon">🔖</div>
+      <span>网络收藏夹</span>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" id="tab-btn-save">一键收藏</button>
+      <button class="tab-btn" id="tab-btn-search">云端检索</button>
+    </div>
+
+    <button class="icon-btn" id="btn-settings" title="配置 Cloudflare Worker 同步端点">
+      ⚙️
+    </button>
+  </div>
+
+  <!-- 未配置提示 -->
+  <div id="unconfigured-tip" class="view" style="display: none;">
+    <div class="tip-box warning">
+      ⚠️ 尚未配置 Cloudflare Worker 地址，请点击下方进行配置。
+    </div>
+    <button class="btn btn-primary" id="btn-go-settings">立即配置云端服务</button>
+  </div>
+
+  <!-- 视图 1：一键收藏 (Save) -->
+  <div class="view active" id="view-save">
+    <!-- 当前页面预览卡片 -->
+    <div class="preview-card">
+      <img id="tab-favicon" src="icons/icon16.png" class="preview-icon" alt="icon">
+      <div class="preview-content">
+        <div class="preview-title" id="tab-title-text">获取中...</div>
+        <div class="preview-url" id="tab-url-text">https://...</div>
+      </div>
+    </div>
+
+    <form id="save-form">
+      <div class="form-group">
+        <label>收藏标题</label>
+        <input type="text" id="input-title" required placeholder="标题">
+      </div>
+
+      <div class="form-group">
+        <label>所属分类</label>
+        <select id="select-category">
+          <option value="">-- 未分类 (默认) --</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>标签 (逗号分隔)</label>
+        <input type="text" id="input-tags" placeholder="例如：开发, 教程, 灵感">
+      </div>
+
+      <div id="save-msg" style="display: none;" class="tip-box success"></div>
+
+      <button type="submit" id="btn-submit-save" class="btn btn-primary">
+        <span>☁️</span><span>保存到云端收藏夹</span>
+      </button>
+    </form>
+  </div>
+
+  <!-- 视图 2：云端检索 (Search) -->
+  <div class="view" id="view-search">
+    <div class="search-input-wrap">
+      <input type="text" id="search-input" placeholder="🔍 实时搜索云端书签...">
+    </div>
+    <div class="search-results" id="search-results">
+      <div style="text-align: center; color: #94a3b8; padding: 20px 0;">正在拉取云端书签...</div>
+    </div>
+  </div>
+
+  <!-- 视图 3：设置 (Settings) -->
+  <div class="view" id="view-settings">
+    <div class="tip-box">
+      🌐 直连您的 Cloudflare Worker 独立服务，实现跨设备多端秒级同步。
+    </div>
+
+    <form id="settings-form">
+      <div class="form-group">
+        <label>Worker 线上地址</label>
+        <input type="url" id="settings-worker-url" required placeholder="https://bookmark-online.xxx.workers.dev">
+      </div>
+
+      <div class="form-group">
+        <label>访问密钥 (ACCESS_TOKEN)</label>
+        <input type="password" id="settings-token" placeholder="Worker 配置的访问密码 (如无密码可留空)">
+      </div>
+
+      <div id="settings-msg" style="display: none;" class="tip-box"></div>
+
+      <button type="submit" id="btn-save-settings" class="btn btn-primary">
+        <span>💾</span><span>测试连接并保存</span>
+      </button>
+      <button type="button" id="btn-back-from-settings" class="btn btn-secondary">返回</button>
+    </form>
+  </div>
+
+  <!-- 底部状态栏 -->
+  <div class="footer">
+    <div class="sync-status">
+      <span class="dot" id="status-dot"></span>
+      <span id="status-text">就绪</span>
+    </div>
+    <span>Tauri + Workers</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

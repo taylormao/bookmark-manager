@@ -147,3 +147,4 @@ pub async fn perform_two_way_sync(db: &Database) -> Result<SyncResult, String> {
         server_time: pull_data.server_time,
     })
 }
+

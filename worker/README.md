@@ -77,3 +77,4 @@ npm run deploy
 | `/api/bookmarks/:id` | `DELETE` | 软删除书签 |
 | `/api/sync` | `GET` | 增量拉取（`?since=<timestamp>`） |
 | `/api/sync` | `POST` | 桌面客户端双向增量合并与推送 |
+

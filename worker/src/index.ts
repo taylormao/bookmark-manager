@@ -733,3 +733,4 @@ function renderWebApp(title: string, authorized: boolean): string {
 </body>
 </html>`;
 }
+
