@@ -683,11 +683,11 @@ impl Database {
     ) -> Result<(Vec<crate::sync::CloudCategory>, Vec<crate::sync::CloudBookmark>)> {
         let conn = self.conn.lock().unwrap();
 
-        // 1. 获取变更分类
+        // 1. 获取变更分类 (since 为 0 时同步全部历史分类)
         let mut cat_stmt = conn.prepare(
             "SELECT id, name, parent_id, sort_order, coalesce(updated_at, 0), coalesce(is_deleted, 0)
              FROM categories
-             WHERE coalesce(updated_at, 0) > ?1",
+             WHERE (?1 = 0) OR (coalesce(updated_at, 0) > ?1)",
         )?;
         let cat_rows = cat_stmt.query_map(params![since], |row| {
             Ok(crate::sync::CloudCategory {
