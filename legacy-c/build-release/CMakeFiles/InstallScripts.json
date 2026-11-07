@@ -1,0 +1,12 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/cmake_install.cmake",
+		"C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/third_party/cmake_install.cmake",
+		"C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core/cmake_install.cmake",
+		"C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/cli/cmake_install.cmake",
+		"C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/ui/cmake_install.cmake",
+		"C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/tests/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -1,0 +1,3 @@
+C:\Users\taylor\scoop\apps\cmake\current\bin\cmake.exe -E rm -f CMakeFiles\test_sync.dir/objects.a
+C:\Users\taylor\scoop\apps\mingw\current\bin\ar.exe qc CMakeFiles\test_sync.dir/objects.a @CMakeFiles\test_sync.dir\objects1.rsp
+C:\Users\taylor\scoop\apps\mingw\current\bin\cc.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\test_sync.dir/objects.a -Wl,--no-whole-archive -o test_sync.exe -Wl,--out-implib,libtest_sync.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\test_sync.dir\linkLibs.rsp

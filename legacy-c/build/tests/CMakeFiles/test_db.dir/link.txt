@@ -1,0 +1,3 @@
+C:\Users\taylor\scoop\apps\cmake\current\bin\cmake.exe -E rm -f CMakeFiles\test_db.dir/objects.a
+C:\Users\taylor\scoop\apps\mingw\current\bin\ar.exe qc CMakeFiles\test_db.dir/objects.a @CMakeFiles\test_db.dir\objects1.rsp
+C:\Users\taylor\scoop\apps\mingw\current\bin\cc.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\test_db.dir/objects.a -Wl,--no-whole-archive -o test_db.exe -Wl,--out-implib,libtest_db.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\test_db.dir\linkLibs.rsp

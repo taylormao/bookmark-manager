@@ -1,0 +1,176 @@
+[
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bookmark_core.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bookmark_core.dir\\bmk_types.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\core\\bmk_types.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/core/bmk_types.c",
+  "output": "src/core/CMakeFiles/bookmark_core.dir/bmk_types.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bookmark_core.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bookmark_core.dir\\bmk_log.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\core\\bmk_log.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/core/bmk_log.c",
+  "output": "src/core/CMakeFiles/bookmark_core.dir/bmk_log.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bookmark_core.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bookmark_core.dir\\bmk_url.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\core\\bmk_url.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/core/bmk_url.c",
+  "output": "src/core/CMakeFiles/bookmark_core.dir/bmk_url.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bookmark_core.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bookmark_core.dir\\bmk_db.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\core\\bmk_db.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/core/bmk_db.c",
+  "output": "src/core/CMakeFiles/bookmark_core.dir/bmk_db.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bookmark_core.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bookmark_core.dir\\bmk_settings.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\core\\bmk_settings.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/core/bmk_settings.c",
+  "output": "src/core/CMakeFiles/bookmark_core.dir/bmk_settings.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bookmark_core.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bookmark_core.dir\\bmk_netscape.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\core\\bmk_netscape.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/core/bmk_netscape.c",
+  "output": "src/core/CMakeFiles/bookmark_core.dir/bmk_netscape.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bookmark_core.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bookmark_core.dir\\bmk_fetch.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\core\\bmk_fetch.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/core/bmk_fetch.c",
+  "output": "src/core/CMakeFiles/bookmark_core.dir/bmk_fetch.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bookmark_core.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bookmark_core.dir\\bmk_validate.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\core\\bmk_validate.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/core/bmk_validate.c",
+  "output": "src/core/CMakeFiles/bookmark_core.dir/bmk_validate.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bookmark_core.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bookmark_core.dir\\bmk_process.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\core\\bmk_process.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/core/bmk_process.c",
+  "output": "src/core/CMakeFiles/bookmark_core.dir/bmk_process.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bookmark_core.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bookmark_core.dir\\bmk_proxy.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\core\\bmk_proxy.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/core/bmk_proxy.c",
+  "output": "src/core/CMakeFiles/bookmark_core.dir/bmk_proxy.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bookmark_core.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bookmark_core.dir\\bmk_backup.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\core\\bmk_backup.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/core/bmk_backup.c",
+  "output": "src/core/CMakeFiles/bookmark_core.dir/bmk_backup.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bookmark_core.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bookmark_core.dir\\bmk_sync.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\core\\bmk_sync.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/core/bmk_sync.c",
+  "output": "src/core/CMakeFiles/bookmark_core.dir/bmk_sync.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/core",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bookmark_core.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bookmark_core.dir\\bmk_app.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\core\\bmk_app.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/core/bmk_app.c",
+  "output": "src/core/CMakeFiles/bookmark_core.dir/bmk_app.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/cli",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bmk-cli.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\bmk-cli.dir\\main.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\cli\\main.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/cli/main.c",
+  "output": "src/cli/CMakeFiles/bmk-cli.dir/main.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/ui",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bmk-gui.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DLIBDEFLATE_DLL -mfpmath=sse -msse -msse2 -o CMakeFiles\\bmk-gui.dir\\main.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\ui\\main.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/ui/main.c",
+  "output": "src/ui/CMakeFiles/bmk-gui.dir/main.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/ui",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bmk-gui.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DLIBDEFLATE_DLL -mfpmath=sse -msse -msse2 -o CMakeFiles\\bmk-gui.dir\\bmk_i18n.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\ui\\bmk_i18n.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/ui/bmk_i18n.c",
+  "output": "src/ui/CMakeFiles/bmk-gui.dir/bmk_i18n.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/ui",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bmk-gui.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DLIBDEFLATE_DLL -mfpmath=sse -msse -msse2 -o CMakeFiles\\bmk-gui.dir\\bmk_window.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\ui\\bmk_window.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/ui/bmk_window.c",
+  "output": "src/ui/CMakeFiles/bmk-gui.dir/bmk_window.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/ui",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bmk-gui.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DLIBDEFLATE_DLL -mfpmath=sse -msse -msse2 -o CMakeFiles\\bmk-gui.dir\\bmk_dialog_edit.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\ui\\bmk_dialog_edit.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/ui/bmk_dialog_edit.c",
+  "output": "src/ui/CMakeFiles/bmk-gui.dir/bmk_dialog_edit.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/ui",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bmk-gui.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DLIBDEFLATE_DLL -mfpmath=sse -msse -msse2 -o CMakeFiles\\bmk-gui.dir\\bmk_dialog_tasks.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\ui\\bmk_dialog_tasks.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/ui/bmk_dialog_tasks.c",
+  "output": "src/ui/CMakeFiles/bmk-gui.dir/bmk_dialog_tasks.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/ui",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bmk-gui.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DLIBDEFLATE_DLL -mfpmath=sse -msse -msse2 -o CMakeFiles\\bmk-gui.dir\\bmk_dialog_settings.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\ui\\bmk_dialog_settings.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/ui/bmk_dialog_settings.c",
+  "output": "src/ui/CMakeFiles/bmk-gui.dir/bmk_dialog_settings.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/src/ui",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\bmk-gui.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DLIBDEFLATE_DLL -mfpmath=sse -msse -msse2 -o CMakeFiles\\bmk-gui.dir\\bmk_selftest.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\src\\ui\\bmk_selftest.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/src/ui/bmk_selftest.c",
+  "output": "src/ui/CMakeFiles/bmk-gui.dir/bmk_selftest.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/tests",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\test_url.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\test_url.dir\\test_url.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\tests\\test_url.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/tests/test_url.c",
+  "output": "tests/CMakeFiles/test_url.dir/test_url.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/tests",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\test_db.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\test_db.dir\\test_db.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\tests\\test_db.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/tests/test_db.c",
+  "output": "tests/CMakeFiles/test_db.dir/test_db.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/tests",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\test_netscape.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\test_netscape.dir\\test_netscape.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\tests\\test_netscape.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/tests/test_netscape.c",
+  "output": "tests/CMakeFiles/test_netscape.dir/test_netscape.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/tests",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\test_merge.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\test_merge.dir\\test_merge.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\tests\\test_merge.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/tests/test_merge.c",
+  "output": "tests/CMakeFiles/test_merge.dir/test_merge.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/tests",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\test_vless.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\test_vless.dir\\test_vless.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\tests\\test_vless.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/tests/test_vless.c",
+  "output": "tests/CMakeFiles/test_vless.dir/test_vless.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/tests",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\test_sync.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\test_sync.dir\\test_sync.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\tests\\test_sync.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/tests/test_sync.c",
+  "output": "tests/CMakeFiles/test_sync.dir/test_sync.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/tests",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\test_validate.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\test_validate.dir\\test_validate.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\tests\\test_validate.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/tests/test_validate.c",
+  "output": "tests/CMakeFiles/test_validate.dir/test_validate.c.obj"
+},
+{
+  "directory": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/build-release/tests",
+  "command": "C:\\Users\\taylor\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DBMK_HAVE_GUMBO=1 @CMakeFiles\\test_backup.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu11 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles\\test_backup.dir\\test_backup.c.obj -c C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\tests\\test_backup.c",
+  "file": "C:/Users/taylor/Desktop/daily/works/codes/C-bookmarkmanger/tests/test_backup.c",
+  "output": "tests/CMakeFiles/test_backup.dir/test_backup.c.obj"
+}
+]

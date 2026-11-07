@@ -1,0 +1,3 @@
+# Hashes of file build rules.
+f17054ce71d4152da302e309df9e9dca src/cli/CMakeFiles/copy_cli_runtime_dlls
+4c99a8eb9fed905fef52b1b8713fa669 tests/CMakeFiles/copy_test_runtime_dlls

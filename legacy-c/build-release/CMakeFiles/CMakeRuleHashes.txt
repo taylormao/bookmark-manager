@@ -1,0 +1,4 @@
+# Hashes of file build rules.
+d58b9b769667a9f276ab5f2fd4cc535d src/cli/CMakeFiles/copy_cli_runtime_dlls
+a8123a506c43789846819235872fdae6 tests/CMakeFiles/copy_gui_selftest_dlls
+93a433b9f1456d9230d720be145676fe tests/CMakeFiles/copy_test_runtime_dlls

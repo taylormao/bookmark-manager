@@ -1,0 +1,22 @@
+ERR dir: [safe-delete][SAFE_DELETE_FAIL_CLOSED] {"target":"C:\\Users\\taylor\\Desktop\\daily\\works\\codes\\C-bookmarkmanger\\qa-gui-data-ps","reason":"trash-failed","detail":"Exception calling \"DeleteDirectory\" with \"3\" argument(s): \"指定的路径无效。\""}
+Launched PID=19540
+PROCESS_ALIVE PID=19540 Responding=True
+--- stdout ---
+--- stderr ---
+--- data dir ---
+C:\Users\taylor\Desktop\daily\works\codes\C-bookmarkmanger\qa-gui-data-ps\backups len=1
+C:\Users\taylor\Desktop\daily\works\codes\C-bookmarkmanger\qa-gui-data-ps\logs len=1
+C:\Users\taylor\Desktop\daily\works\codes\C-bookmarkmanger\qa-gui-data-ps\proxy len=1
+C:\Users\taylor\Desktop\daily\works\codes\C-bookmarkmanger\qa-gui-data-ps\sync len=1
+C:\Users\taylor\Desktop\daily\works\codes\C-bookmarkmanger\qa-gui-data-ps\bookmarks.db len=4096
+C:\Users\taylor\Desktop\daily\works\codes\C-bookmarkmanger\qa-gui-data-ps\bookmarks.db-shm len=32768
+C:\Users\taylor\Desktop\daily\works\codes\C-bookmarkmanger\qa-gui-data-ps\bookmarks.db-wal len=123632
+C:\Users\taylor\Desktop\daily\works\codes\C-bookmarkmanger\qa-gui-data-ps\stderr.txt len=0
+C:\Users\taylor\Desktop\daily\works\codes\C-bookmarkmanger\qa-gui-data-ps\stdout.txt len=0
+C:\Users\taylor\Desktop\daily\works\codes\C-bookmarkmanger\qa-gui-data-ps\logs\app.log len=184
+--- tasklist ---
+
+映像名称                       PID 会话名              会话#       内存使用 
+========================= ======== ================ =========== ============
+bmk-gui.exe                  50008 Console                    1    286,500 K
+bmk-gui.exe                  19540 Console                    1    297,568 K

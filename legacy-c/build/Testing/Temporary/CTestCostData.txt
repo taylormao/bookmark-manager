@@ -1,0 +1,9 @@
+test_url 32 0.0094016
+test_db 29 0.0156659
+test_netscape 30 0.0120174
+test_merge 29 0.00916223
+test_vless 30 0.00213702
+test_sync 26 0.238308
+test_validate 27 0.121931
+test_backup 7 0.0164771
+---
