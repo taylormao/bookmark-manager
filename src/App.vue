@@ -726,12 +726,61 @@ function handleDragLeaveRoot() {
   isCategoryDragOverRoot.value = false;
 }
 
-// 书签卡片拖拽至分类
+// Toast 消息提示
+const toastMessage = ref<string | null>(null);
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
+
+function showToast(msg: string) {
+  if (toastTimer) clearTimeout(toastTimer);
+  toastMessage.value = msg;
+  toastTimer = setTimeout(() => {
+    toastMessage.value = null;
+  }, 2600);
+}
+
+// 书签卡片拖拽交互
+const isDraggingBookmark = ref(false);
+const draggedBookmarkId = ref<number | null>(null);
+const isDragOverUncategorized = ref(false);
+
 function handleBookmarkDragStart(bm: Bookmark, e: DragEvent) {
   if (!e.dataTransfer) return;
+  isDraggingBookmark.value = true;
+  draggedBookmarkId.value = bm.id;
   e.dataTransfer.setData("text/bookmark-id", String(bm.id));
   e.dataTransfer.setData("text/plain", bm.title);
   e.dataTransfer.effectAllowed = "move";
+}
+
+function handleBookmarkDragEnd() {
+  isDraggingBookmark.value = false;
+  draggedBookmarkId.value = null;
+}
+
+function handleDragOverUncategorized(e: DragEvent) {
+  if (e.dataTransfer?.types.includes("text/bookmark-id")) {
+    e.preventDefault();
+    isDragOverUncategorized.value = true;
+    e.dataTransfer.dropEffect = "move";
+  }
+}
+
+async function handleDropToUncategorized(e: DragEvent) {
+  e.preventDefault();
+  isDragOverUncategorized.value = false;
+  const bmIdStr = e.dataTransfer?.getData("text/bookmark-id");
+  if (!bmIdStr) return;
+  const bookmarkId = parseInt(bmIdStr, 10);
+  if (isNaN(bookmarkId)) return;
+
+  try {
+    const bm = bookmarks.value.find((b) => b.id === bookmarkId);
+    await invoke("set_bookmark_category", { id: bookmarkId, category_id: null });
+    showToast(`已将《${bm?.title || "书签"}》移至【未分类】`);
+    await loadBookmarks();
+  } catch (err) {
+    alert("移出分类失败: " + err);
+  }
 }
 
 async function handleDropBookmarkToCategory(payload: {
@@ -740,20 +789,16 @@ async function handleDropBookmarkToCategory(payload: {
 }) {
   try {
     const bm = bookmarks.value.find((b) => b.id === payload.bookmarkId);
-    if (!bm) return;
-    await invoke("update_bookmark", {
-      id: bm.id,
-      input: {
-        title: bm.title,
-        url: bm.url,
-        category_id: payload.targetCategoryId,
-        tags: bm.tags,
-        icon_data_url: bm.icon_data_url,
-      },
+    const targetCat = categories.value.find((c) => c.id === payload.targetCategoryId);
+    await invoke("set_bookmark_category", {
+      id: payload.bookmarkId,
+      category_id: payload.targetCategoryId,
     });
+    showToast(`已将《${bm?.title || "书签"}》成功归类至【${targetCat?.name || "指定分类"}】`);
     await loadBookmarks();
   } catch (err) {
     console.error("归类失败:", err);
+    alert("归类失败: " + err);
   }
 }
 
@@ -809,12 +854,19 @@ onMounted(() => {
 
         <button
           @click="setCategory(-1)"
+          @dragover="handleDragOverUncategorized"
+          @dragleave="isDragOverUncategorized = false"
+          @drop="handleDropToUncategorized"
           :class="[
-            'w-full flex items-center px-3 py-2 rounded-lg text-sm font-medium transition gap-2.5 cursor-pointer',
+            'w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium transition cursor-pointer',
             filter.categoryId === -1 ? 'bg-blue-50 text-blue-600 font-semibold' : 'text-slate-600 hover:bg-slate-100',
+            isDragOverUncategorized ? '!bg-amber-100 !border-2 border-dashed !border-amber-500 !text-amber-800 shadow-xs font-semibold' : ''
           ]"
         >
-          <Folder class="w-4 h-4 text-slate-400" /> 未分类书签
+          <span class="flex items-center gap-2.5">
+            <Folder class="w-4 h-4 text-slate-400" /> 未分类书签
+          </span>
+          <span v-if="isDragOverUncategorized" class="text-xs text-amber-700 font-semibold animate-pulse">释放移入未分类</span>
         </button>
 
         <!-- 专属筛选：AI 辅助分类书签 -->
@@ -853,8 +905,10 @@ onMounted(() => {
 
       <!-- 分类树 -->
       <div class="flex-1 overflow-y-auto p-3">
-        <div class="flex items-center justify-between px-2 mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
-          <span>书签分类</span>
+        <div class="flex items-center justify-between px-2 mb-2 text-xs font-semibold uppercase tracking-wider">
+          <span :class="isDraggingBookmark ? 'text-emerald-600 font-bold animate-pulse' : 'text-slate-400'">
+            {{ isDraggingBookmark ? '👇 拖放到分类快速归类' : '书签分类' }}
+          </span>
           <button @click="openCreateCategoryModal(null)" class="p-1 hover:text-blue-600 rounded transition cursor-pointer" title="新建根分类">
             <FolderPlus class="w-4 h-4" />
           </button>
@@ -1117,7 +1171,13 @@ onMounted(() => {
             :key="bm.id"
             draggable="true"
             @dragstart="(e) => handleBookmarkDragStart(bm, e)"
-            class="group bg-white rounded-xl border border-slate-200/80 hover:border-blue-400/80 p-4 shadow-sm hover:shadow-md transition-all flex flex-col justify-between cursor-grab active:cursor-grabbing"
+            @dragend="handleBookmarkDragEnd"
+            class="group bg-white rounded-xl border p-4 shadow-xs hover:shadow-md transition-all flex flex-col justify-between cursor-grab active:cursor-grabbing select-none"
+            :class="[
+              draggedBookmarkId === bm.id
+                ? 'opacity-40 border-dashed !border-blue-500 scale-[0.98]'
+                : 'border-slate-200/80 hover:border-blue-400/80',
+            ]"
           >
             <div>
               <!-- 头部：Favicon 图标 + 标题 + 状态 -->
@@ -1543,5 +1603,23 @@ onMounted(() => {
         </form>
       </div>
     </div>
+
+    <!-- 全局 Toast 提示 -->
+    <transition
+      enter-active-class="transform transition ease-out duration-300"
+      enter-from-class="translate-y-4 opacity-0"
+      enter-to-class="translate-y-0 opacity-100"
+      leave-active-class="transition ease-in duration-200"
+      leave-from-class="opacity-100"
+      leave-to-class="opacity-0"
+    >
+      <div
+        v-if="toastMessage"
+        class="fixed bottom-6 right-6 z-50 bg-slate-900/90 text-white px-4 py-2.5 rounded-xl shadow-2xl backdrop-blur-xs flex items-center gap-2.5 text-xs font-medium border border-slate-700/50"
+      >
+        <CheckCircle2 class="w-4 h-4 text-emerald-400 shrink-0" />
+        <span>{{ toastMessage }}</span>
+      </div>
+    </transition>
   </div>
 </template>

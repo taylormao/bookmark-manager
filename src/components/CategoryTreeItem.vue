@@ -77,6 +77,7 @@ function cancelRename() {
 
 // 拖拽状态
 const dragOverPosition = ref<"before" | "after" | "inside" | null>(null);
+const isBookmarkOver = ref(false);
 
 function handleDragStart(e: DragEvent) {
   if (!e.dataTransfer) return;
@@ -94,6 +95,7 @@ function handleDragOver(e: DragEvent) {
   const isCategory = e.dataTransfer.types.includes("text/category-id");
 
   if (isBookmark) {
+    isBookmarkOver.value = true;
     dragOverPosition.value = "inside";
     e.dataTransfer.dropEffect = "move";
     return;
@@ -117,6 +119,7 @@ function handleDragOver(e: DragEvent) {
 
 function handleDragLeave() {
   dragOverPosition.value = null;
+  isBookmarkOver.value = false;
 }
 
 function handleDrop(e: DragEvent) {
@@ -128,6 +131,7 @@ function handleDrop(e: DragEvent) {
   const bmIdStr = e.dataTransfer.getData("text/bookmark-id");
   const position = dragOverPosition.value;
   dragOverPosition.value = null;
+  isBookmarkOver.value = false;
 
   if (bmIdStr) {
     const bookmarkId = parseInt(bmIdStr, 10);
@@ -159,8 +163,11 @@ function handleDrop(e: DragEvent) {
         isSelected
           ? 'bg-blue-50 text-blue-600 font-semibold'
           : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900',
-        dragOverPosition === 'inside'
+        dragOverPosition === 'inside' && !isBookmarkOver
           ? 'bg-blue-100/70 border-dashed !border-blue-400'
+          : '',
+        isBookmarkOver
+          ? 'bg-emerald-50 !border-2 !border-emerald-500 shadow-xs text-emerald-800 font-medium'
           : '',
       ]"
       :style="{ paddingLeft: `${currentLevel * 14 + 8}px` }"
@@ -235,6 +242,13 @@ function handleDrop(e: DragEvent) {
           <span v-if="hasChildren" class="text-[10px] text-slate-400 font-normal ml-0.5">
             ({{ node.children.length }})
           </span>
+          <!-- 书签拖拽悬浮提示徽章 -->
+          <span
+            v-if="isBookmarkOver"
+            class="ml-auto text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-medium shrink-0 shadow-xs"
+          >
+            放开归类
+          </span>
         </template>
       </div>
 
@@ -295,3 +309,4 @@ function handleDrop(e: DragEvent) {
     </div>
   </div>
 </template>
+

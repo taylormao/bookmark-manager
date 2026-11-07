@@ -144,6 +144,16 @@ fn update_bookmark(mut input: BookmarkUpdateInput, state: State<'_, AppState>) -
 }
 
 #[tauri::command]
+fn set_bookmark_category(id: i64, category_id: Option<i64>, state: State<'_, AppState>) -> Result<(), String> {
+    state.db.update_bookmark_category(id, category_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn batch_set_bookmarks_category(ids: Vec<i64>, category_id: Option<i64>, state: State<'_, AppState>) -> Result<(), String> {
+    state.db.batch_update_bookmarks_category(&ids, category_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn delete_bookmark(id: i64, state: State<'_, AppState>) -> Result<(), String> {
     state.db.delete_bookmark(id).map_err(|e| e.to_string())
 }
@@ -289,6 +299,8 @@ pub fn run() {
             list_bookmarks,
             create_bookmark,
             update_bookmark,
+            set_bookmark_category,
+            batch_set_bookmarks_category,
             delete_bookmark,
             import_bookmarks_html,
             export_bookmarks_html,

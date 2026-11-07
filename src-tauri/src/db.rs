@@ -302,6 +302,30 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_bookmark_category(&self, id: i64, category_id: Option<i64>) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE bookmarks SET category_id = ?1, updated_at = ?2 WHERE id = ?3",
+            params![category_id, now, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn batch_update_bookmarks_category(&self, ids: &[i64], category_id: Option<i64>) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare("UPDATE bookmarks SET category_id = ?1, updated_at = ?2 WHERE id = ?3")?;
+            for &id in ids {
+                stmt.execute(params![category_id, now, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn delete_bookmark(&self, id: i64) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM bookmarks WHERE id = ?1", params![id])?;
@@ -754,5 +778,59 @@ mod tests {
         let cats = db.get_categories().unwrap();
         let roots: Vec<i64> = cats.into_iter().filter(|c| c.parent_id.is_none()).map(|c| c.id).collect();
         assert_eq!(roots, vec![c2, c1]);
+    }
+
+    #[test]
+    fn test_update_bookmark_category() {
+        let db = Database::new_in_memory().unwrap();
+        let c1 = db.create_category("分类A", None).unwrap();
+        let c2 = db.create_category("分类B", None).unwrap();
+
+        let bm_id = db.create_bookmark(&BookmarkCreateInput {
+            title: "测试网址".to_string(),
+            url: "https://test.org".to_string(),
+            category_id: None,
+            tags: vec![],
+            icon_data_url: None,
+        }).unwrap();
+
+        // 移入分类A
+        db.update_bookmark_category(bm_id, Some(c1)).unwrap();
+        let bms = db.list_bookmarks(&BookmarkFilter {
+            search: None,
+            category_id: Some(c1),
+            tag: None,
+            valid_state: None,
+            check_note: None,
+            sort_by: None,
+        }).unwrap();
+        assert_eq!(bms.len(), 1);
+        assert_eq!(bms[0].category_id, Some(c1));
+
+        // 批量移入分类B
+        db.batch_update_bookmarks_category(&[bm_id], Some(c2)).unwrap();
+        let bms = db.list_bookmarks(&BookmarkFilter {
+            search: None,
+            category_id: Some(c2),
+            tag: None,
+            valid_state: None,
+            check_note: None,
+            sort_by: None,
+        }).unwrap();
+        assert_eq!(bms.len(), 1);
+        assert_eq!(bms[0].category_id, Some(c2));
+
+        // 移出分类（变为未分类）
+        db.update_bookmark_category(bm_id, None).unwrap();
+        let bms = db.list_bookmarks(&BookmarkFilter {
+            search: None,
+            category_id: Some(-1),
+            tag: None,
+            valid_state: None,
+            check_note: None,
+            sort_by: None,
+        }).unwrap();
+        assert_eq!(bms.len(), 1);
+        assert_eq!(bms[0].category_id, None);
     }
 }
