@@ -42,4 +42,8 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: 'worker'
           command: 'deploy'
+          secrets: |
+            ACCESS_TOKEN
+        env:
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
 

@@ -7,7 +7,7 @@
     {
       "binding": "DB",
       "database_name": "bookmarks-db",
-      "database_id": "YOUR_D1_DATABASE_ID_OR_OVERRIDDEN_BY_CI"
+      "database_id": "4c7fc44f-9010-496f-b161-9263d8de5e7f"
     }
   ],
   "vars": {

@@ -363,3 +363,4 @@ settingsForm.addEventListener("submit", async (e) => {
 // 初始化
 loadCurrentTab();
 loadConfig();
+
