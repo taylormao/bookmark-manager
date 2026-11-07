@@ -43,6 +43,7 @@ impl Database {
               id        INTEGER PRIMARY KEY AUTOINCREMENT,
               name      TEXT NOT NULL,
               parent_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
+              sort_order INTEGER DEFAULT 0,
               UNIQUE (parent_id, name COLLATE NOCASE)
             );
 
@@ -83,18 +84,22 @@ impl Database {
             );"
         )?;
 
+        // 向后兼容迁移：补充可能缺失的字段
+        let _ = conn.execute("ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0;", []);
+
         Ok(())
     }
 
     // --- 分类管理 ---
     pub fn get_categories(&self) -> Result<Vec<Category>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, parent_id FROM categories ORDER BY name COLLATE NOCASE ASC")?;
+        let mut stmt = conn.prepare("SELECT id, name, parent_id, coalesce(sort_order, 0) FROM categories ORDER BY coalesce(sort_order, 0) ASC, name COLLATE NOCASE ASC")?;
         let rows = stmt.query_map([], |row| {
             Ok(Category {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 parent_id: row.get(2)?,
+                sort_order: row.get(3)?,
             })
         })?;
 
@@ -107,11 +112,76 @@ impl Database {
 
     pub fn create_category(&self, name: &str, parent_id: Option<i64>) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
+        // 计算下一个 sort_order
+        let next_order: i64 = conn
+            .query_row(
+                "SELECT coalesce(MAX(sort_order), -1) + 1 FROM categories WHERE parent_id IS ?1",
+                params![parent_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
         conn.execute(
-            "INSERT INTO categories (name, parent_id) VALUES (?1, ?2)",
-            params![name, parent_id],
+            "INSERT INTO categories (name, parent_id, sort_order) VALUES (?1, ?2, ?3)",
+            params![name.trim(), parent_id, next_order],
         )?;
         Ok(conn.last_insert_rowid())
+    }
+
+    pub fn rename_category(&self, id: i64, new_name: &str) -> std::result::Result<(), String> {
+        let trimmed = new_name.trim();
+        if trimmed.is_empty() {
+            return Err("分类名称不能为空".to_string());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE categories SET name = ?1 WHERE id = ?2",
+            params![trimmed, id],
+        ).map_err(|e| format!("重命名分类失败: {}", e))?;
+        Ok(())
+    }
+
+    pub fn update_category_parent(&self, id: i64, new_parent_id: Option<i64>) -> std::result::Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        if let Some(target_parent) = new_parent_id {
+            if target_parent == id {
+                return Err("不能将分类移动到自身下方".to_string());
+            }
+            // 环路检测：防止将父节点拖入其自身的子孙节点
+            let mut curr = Some(target_parent);
+            while let Some(p) = curr {
+                if p == id {
+                    return Err("不能将分类移动到其子分类下方（避免循环层级）".to_string());
+                }
+                curr = conn
+                    .query_row(
+                        "SELECT parent_id FROM categories WHERE id = ?1",
+                        params![p],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(None);
+            }
+        }
+
+        conn.execute(
+            "UPDATE categories SET parent_id = ?1 WHERE id = ?2",
+            params![new_parent_id, id],
+        ).map_err(|e| format!("更新分类层级失败: {}", e))?;
+
+        Ok(())
+    }
+
+    pub fn reorder_categories(&self, ordered_ids: &[i64]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare("UPDATE categories SET sort_order = ?1 WHERE id = ?2")?;
+            for (idx, &id) in ordered_ids.iter().enumerate() {
+                stmt.execute(params![idx as i64, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn delete_category(&self, id: i64) -> Result<()> {
@@ -646,5 +716,43 @@ mod tests {
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].title, "示例 1");
         assert_eq!(remaining[0].tags.len(), 2);
+    }
+
+    #[test]
+    fn test_category_hierarchy_and_reorder() {
+        let db = Database::new_in_memory().unwrap();
+
+        let c1 = db.create_category("技术", None).unwrap();
+        let c2 = db.create_category("生活", None).unwrap();
+        let c3 = db.create_category("Rust", Some(c1)).unwrap();
+        let c4 = db.create_category("Async", Some(c3)).unwrap();
+
+        // 验证重命名
+        db.rename_category(c2, "日常生活").unwrap();
+        let cats = db.get_categories().unwrap();
+        let c2_renamed = cats.iter().find(|c| c.id == c2).unwrap();
+        assert_eq!(c2_renamed.name, "日常生活");
+
+        // 验证层级变更：将 c2 变为 c1 的子分类
+        db.update_category_parent(c2, Some(c1)).unwrap();
+        let cats = db.get_categories().unwrap();
+        assert_eq!(cats.iter().find(|c| c.id == c2).unwrap().parent_id, Some(c1));
+
+        // 验证循环依赖防御：不能将 c1 设为自身
+        assert!(db.update_category_parent(c1, Some(c1)).is_err());
+
+        // 验证循环依赖防御：不能将 c1 设为其子孙 c4 的子节点
+        assert!(db.update_category_parent(c1, Some(c4)).is_err());
+
+        // 验证将 c2 移回根级
+        db.update_category_parent(c2, None).unwrap();
+        let cats = db.get_categories().unwrap();
+        assert_eq!(cats.iter().find(|c| c.id == c2).unwrap().parent_id, None);
+
+        // 验证重新排序
+        db.reorder_categories(&[c2, c1]).unwrap();
+        let cats = db.get_categories().unwrap();
+        let roots: Vec<i64> = cats.into_iter().filter(|c| c.parent_id.is_none()).map(|c| c.id).collect();
+        assert_eq!(roots, vec![c2, c1]);
     }
 }

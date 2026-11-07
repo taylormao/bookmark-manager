@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted } from "vue";
+import { ref, reactive, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import CategoryTreeItem, { type CategoryNode } from "./components/CategoryTreeItem.vue";
 import {
   Bookmark as BookmarkIcon,
   Folder,
@@ -18,7 +19,6 @@ import {
   ShieldAlert,
   Copy,
   RefreshCw,
-  FolderCheck,
   LayoutGrid,
   Upload,
   Download,
@@ -37,6 +37,7 @@ interface Category {
   id: number;
   name: string;
   parent_id: number | null;
+  sort_order?: number;
 }
 
 interface Tag {
@@ -112,6 +113,43 @@ const bookmarkForm = reactive({
 
 const isCategoryModalOpen = ref(false);
 const newCategoryName = ref("");
+const newCategoryParentId = ref<number | null>(null);
+const expandedIds = ref<Set<number>>(new Set());
+const isCategoryDragOverRoot = ref(false);
+
+// 构建多级分类树
+const categoryTree = computed<CategoryNode[]>(() => {
+  const map = new Map<number, CategoryNode>();
+  categories.value.forEach((c) => {
+    map.set(c.id, {
+      id: c.id,
+      name: c.name,
+      parent_id: c.parent_id,
+      sort_order: c.sort_order ?? 0,
+      children: [],
+    });
+  });
+
+  const roots: CategoryNode[] = [];
+  categories.value.forEach((c) => {
+    const node = map.get(c.id)!;
+    if (c.parent_id !== null && map.has(c.parent_id)) {
+      map.get(c.parent_id)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+
+  const sortNodes = (nodes: CategoryNode[]) => {
+    nodes.sort(
+      (a, b) =>
+        (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name)
+    );
+    nodes.forEach((n) => sortNodes(n.children));
+  };
+  sortNodes(roots);
+  return roots;
+});
 
 // 代理设置弹窗与状态
 const isProxyModalOpen = ref(false);
@@ -129,6 +167,12 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 async function loadCategories() {
   try {
     categories.value = await invoke("get_categories");
+    // 自动展开已有的父分类
+    categories.value.forEach((c) => {
+      if (c.parent_id !== null) {
+        expandedIds.value.add(c.parent_id);
+      }
+    });
   } catch (err) {
     console.error("Failed to load categories:", err);
   }
@@ -548,7 +592,16 @@ async function handleFileSelected(event: Event) {
 }
 
 // 分类管理
-function openCreateCategoryModal() {
+function toggleCategoryExpand(id: number) {
+  if (expandedIds.value.has(id)) {
+    expandedIds.value.delete(id);
+  } else {
+    expandedIds.value.add(id);
+  }
+}
+
+function openCreateCategoryModal(parentId: number | null = null) {
+  newCategoryParentId.value = parentId;
   newCategoryName.value = "";
   isCategoryModalOpen.value = true;
 }
@@ -557,16 +610,29 @@ async function submitCategory() {
   const name = newCategoryName.value.trim();
   if (!name) return;
   try {
-    await invoke("create_category", { name, parent_id: null });
+    await invoke("create_category", { name, parent_id: newCategoryParentId.value });
+    if (newCategoryParentId.value !== null) {
+      expandedIds.value.add(newCategoryParentId.value);
+    }
     isCategoryModalOpen.value = false;
+    newCategoryParentId.value = null;
+    newCategoryName.value = "";
     await loadCategories();
   } catch (err) {
     alert("创建分类失败: " + err);
   }
 }
 
-async function handleDeleteCategory(id: number, e: Event) {
-  e.stopPropagation();
+async function handleRenameCategory(id: number, newName: string) {
+  try {
+    await invoke("rename_category", { id, name: newName });
+    await loadCategories();
+  } catch (e) {
+    alert("重命名分类失败: " + e);
+  }
+}
+
+async function handleDeleteCategory(id: number) {
   if (confirm("删除该分类会将该分类下的书签移至未分类，确认删除吗？")) {
     try {
       await invoke("delete_category", { id });
@@ -577,6 +643,117 @@ async function handleDeleteCategory(id: number, e: Event) {
     } catch (err) {
       alert("删除分类失败: " + err);
     }
+  }
+}
+
+async function handleDropCategory(payload: {
+  draggedId: number;
+  targetId: number;
+  position: "before" | "after" | "inside";
+}) {
+  const { draggedId, targetId, position } = payload;
+  if (draggedId === targetId) return;
+
+  try {
+    if (position === "inside") {
+      await invoke("update_category_parent", {
+        id: draggedId,
+        parentId: targetId,
+      });
+      expandedIds.value.add(targetId);
+    } else {
+      const targetCat = categories.value.find((c) => c.id === targetId);
+      if (!targetCat) return;
+      const parentId = targetCat.parent_id;
+
+      const draggedCat = categories.value.find((c) => c.id === draggedId);
+      if (draggedCat && draggedCat.parent_id !== parentId) {
+        await invoke("update_category_parent", {
+          id: draggedId,
+          parentId: parentId ?? null,
+        });
+      }
+
+      const siblings = categories.value
+        .filter(
+          (c) =>
+            (parentId === null ? c.parent_id === null : c.parent_id === parentId) &&
+            c.id !== draggedId
+        )
+        .sort(
+          (a, b) =>
+            (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name)
+        );
+
+      const targetIndex = siblings.findIndex((c) => c.id === targetId);
+      const insertIndex = position === "before" ? targetIndex : targetIndex + 1;
+      siblings.splice(insertIndex, 0, { id: draggedId } as any);
+
+      const orderedIds = siblings.map((c) => c.id);
+      await invoke("reorder_categories", { orderedIds });
+    }
+    await loadCategories();
+  } catch (err) {
+    alert("调整分类层级/顺序失败: " + err);
+  }
+}
+
+async function handleDropToRoot(e: DragEvent) {
+  isCategoryDragOverRoot.value = false;
+  e.preventDefault();
+  const catIdStr = e.dataTransfer?.getData("text/category-id");
+  if (!catIdStr) return;
+  const id = parseInt(catIdStr, 10);
+  if (isNaN(id)) return;
+
+  try {
+    await invoke("update_category_parent", { id, parentId: null });
+    await loadCategories();
+  } catch (err) {
+    alert("提升为根分类失败: " + err);
+  }
+}
+
+function handleDragOverRoot(e: DragEvent) {
+  if (e.dataTransfer?.types.includes("text/category-id")) {
+    e.preventDefault();
+    isCategoryDragOverRoot.value = true;
+    e.dataTransfer.dropEffect = "move";
+  }
+}
+
+function handleDragLeaveRoot() {
+  isCategoryDragOverRoot.value = false;
+}
+
+// 书签卡片拖拽至分类
+function handleBookmarkDragStart(bm: Bookmark, e: DragEvent) {
+  if (!e.dataTransfer) return;
+  e.dataTransfer.setData("text/bookmark-id", String(bm.id));
+  e.dataTransfer.setData("text/plain", bm.title);
+  e.dataTransfer.effectAllowed = "move";
+}
+
+async function handleDropBookmarkToCategory(payload: {
+  bookmarkId: number;
+  targetCategoryId: number;
+}) {
+  try {
+    const bm = bookmarks.value.find((b) => b.id === payload.bookmarkId);
+    if (!bm) return;
+    await invoke("update_bookmark", {
+      id: bm.id,
+      input: {
+        title: bm.title,
+        url: bm.url,
+        category_id: payload.targetCategoryId,
+        tags: bm.tags,
+        icon_data_url: bm.icon_data_url,
+      },
+    });
+    await loadBookmarks();
+  } catch (err) {
+    console.error("归类失败:", err);
   }
 }
 
@@ -678,37 +855,46 @@ onMounted(() => {
       <div class="flex-1 overflow-y-auto p-3">
         <div class="flex items-center justify-between px-2 mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
           <span>书签分类</span>
-          <button @click="openCreateCategoryModal" class="p-1 hover:text-blue-600 rounded transition cursor-pointer" title="新建分类">
+          <button @click="openCreateCategoryModal(null)" class="p-1 hover:text-blue-600 rounded transition cursor-pointer" title="新建根分类">
             <FolderPlus class="w-4 h-4" />
           </button>
         </div>
 
         <div class="space-y-0.5">
-          <div
-            v-for="cat in categories"
+          <CategoryTreeItem
+            v-for="cat in categoryTree"
             :key="cat.id"
-            @click="setCategory(cat.id)"
-            :class="[
-              'group flex items-center justify-between px-3 py-2 rounded-lg text-sm cursor-pointer transition',
-              filter.categoryId === cat.id ? 'bg-blue-50 text-blue-600 font-semibold' : 'text-slate-600 hover:bg-slate-100',
-            ]"
-          >
-            <span class="flex items-center gap-2.5 truncate">
-              <FolderCheck v-if="filter.categoryId === cat.id" class="w-4 h-4 text-blue-600 shrink-0" />
-              <Folder v-else class="w-4 h-4 text-slate-400 group-hover:text-slate-500 shrink-0" />
-              <span class="truncate">{{ cat.name }}</span>
-            </span>
-            <button
-              @click="(e) => handleDeleteCategory(cat.id, e)"
-              class="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 p-1 rounded transition cursor-pointer"
-              title="删除分类"
-            >
-              <Trash2 class="w-3.5 h-3.5" />
-            </button>
-          </div>
+            :node="cat"
+            :active-category-id="filter.categoryId"
+            :expanded-ids="expandedIds"
+            @select="setCategory"
+            @toggle-expand="toggleCategoryExpand"
+            @rename="handleRenameCategory"
+            @delete="handleDeleteCategory"
+            @add-child="(parentId) => openCreateCategoryModal(parentId)"
+            @drop-category="handleDropCategory"
+            @drop-bookmark="handleDropBookmarkToCategory"
+          />
+
           <div v-if="categories.length === 0" class="text-xs text-slate-400 px-3 py-2 italic">
             暂无自定义分类
           </div>
+        </div>
+
+        <!-- 拖放提升为根分类区域 -->
+        <div
+          v-if="categories.length > 0"
+          @dragover="handleDragOverRoot"
+          @dragleave="handleDragLeaveRoot"
+          @drop="handleDropToRoot"
+          class="mt-3 py-2 px-2.5 border border-dashed rounded-lg text-center text-xs transition select-none"
+          :class="[
+            isCategoryDragOverRoot
+              ? 'border-blue-500 bg-blue-50 text-blue-700 font-semibold'
+              : 'border-slate-200 text-slate-400 hover:border-slate-300',
+          ]"
+        >
+          拖动分类到此处提升为根目录
         </div>
 
         <!-- 标签云 -->
@@ -929,7 +1115,9 @@ onMounted(() => {
           <div
             v-for="bm in bookmarks"
             :key="bm.id"
-            class="group bg-white rounded-xl border border-slate-200/80 hover:border-blue-400/80 p-4 shadow-sm hover:shadow-md transition-all flex flex-col justify-between"
+            draggable="true"
+            @dragstart="(e) => handleBookmarkDragStart(bm, e)"
+            class="group bg-white rounded-xl border border-slate-200/80 hover:border-blue-400/80 p-4 shadow-sm hover:shadow-md transition-all flex flex-col justify-between cursor-grab active:cursor-grabbing"
           >
             <div>
               <!-- 头部：Favicon 图标 + 标题 + 状态 -->
@@ -1303,12 +1491,30 @@ onMounted(() => {
     >
       <div class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
         <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-          <h2 class="text-base font-bold text-slate-900">新建分类</h2>
-          <button @click="isCategoryModalOpen = false" class="text-slate-400 hover:text-slate-600 text-lg leading-none cursor-pointer">
+          <h2 class="text-base font-bold text-slate-900">
+            {{ newCategoryParentId !== null ? '添加子分类' : '新建分类' }}
+          </h2>
+          <button @click="isCategoryModalOpen = false; newCategoryParentId = null;" class="text-slate-400 hover:text-slate-600 text-lg leading-none cursor-pointer">
             &times;
           </button>
         </div>
         <form @submit.prevent="submitCategory" class="p-6 space-y-4">
+          <div v-if="newCategoryParentId !== null" class="text-xs text-slate-500 bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+            所属父级分类：<span class="font-semibold text-blue-600">{{ categories.find(c => c.id === newCategoryParentId)?.name }}</span>
+          </div>
+          <div v-else>
+            <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">所属父级分类（可选）</label>
+            <select
+              v-model="newCategoryParentId"
+              class="w-full text-sm px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:border-blue-500 bg-white"
+            >
+              <option :value="null">-- 作为根分类 --</option>
+              <option v-for="cat in categories" :key="cat.id" :value="cat.id">
+                {{ cat.name }}
+              </option>
+            </select>
+          </div>
+
           <div>
             <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">分类名称</label>
             <input
@@ -1319,10 +1525,10 @@ onMounted(() => {
               class="w-full text-sm px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
             />
           </div>
-          <div class="flex justify-end gap-3">
+          <div class="flex justify-end gap-3 pt-2">
             <button
               type="button"
-              @click="isCategoryModalOpen = false"
+              @click="isCategoryModalOpen = false; newCategoryParentId = null;"
               class="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
             >
               取消

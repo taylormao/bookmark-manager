@@ -38,6 +38,21 @@ fn delete_category(id: i64, state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn rename_category(id: i64, name: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.db.rename_category(id, &name)
+}
+
+#[tauri::command]
+fn update_category_parent(id: i64, parent_id: Option<i64>, state: State<'_, AppState>) -> Result<(), String> {
+    state.db.update_category_parent(id, parent_id)
+}
+
+#[tauri::command]
+fn reorder_categories(ordered_ids: Vec<i64>, state: State<'_, AppState>) -> Result<(), String> {
+    state.db.reorder_categories(&ordered_ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_tags(state: State<'_, AppState>) -> Result<Vec<Tag>, String> {
     state.db.get_tags().map_err(|e| e.to_string())
 }
@@ -266,6 +281,9 @@ pub fn run() {
             get_categories,
             create_category,
             delete_category,
+            rename_category,
+            update_category_parent,
+            reorder_categories,
             get_tags,
             get_failure_reasons,
             list_bookmarks,
