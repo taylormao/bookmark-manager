@@ -244,8 +244,10 @@ async fn test_proxy(proxy_url: String) -> Result<fetch::ProxyTestResult, String>
 // 云同步管理命令
 #[tauri::command]
 fn get_sync_config(state: State<'_, AppState>) -> Result<SyncConfig, String> {
-    let worker_url = state.db.get_setting("cf_worker_url").unwrap_or_default().unwrap_or_default();
-    let token = state.db.get_setting("cf_sync_token").unwrap_or_default().unwrap_or_default();
+    let worker_url = state.db.get_setting("cf_worker_url").unwrap_or_default()
+        .unwrap_or_else(|| "https://bookmark-online.mds37215735.workers.dev".to_string());
+    let token = state.db.get_setting("cf_sync_token").unwrap_or_default()
+        .unwrap_or_else(|| "110abcd".to_string());
     let auto_sync = state.db.get_setting("cf_auto_sync").unwrap_or_default().unwrap_or_else(|| "false".to_string()) == "true";
     let last_synced_at = state.db.get_setting("cf_last_synced_at").unwrap_or_default().and_then(|s| s.parse().ok());
     Ok(SyncConfig {

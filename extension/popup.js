@@ -128,22 +128,16 @@ async function loadConfig() {
   if (!storage) return;
 
   storage.get(["workerUrl", "apiToken"], async (data) => {
-    workerConfig.workerUrl = (data.workerUrl || "").trim().replace(/\/+$/, "");
-    workerConfig.apiToken = (data.apiToken || "").trim();
+    workerConfig.workerUrl = (data.workerUrl || "https://bookmark-online.mds37215735.workers.dev").trim().replace(/\/+$/, "");
+    workerConfig.apiToken = (data.apiToken || "110abcd").trim();
 
     settingsWorkerUrl.value = workerConfig.workerUrl;
     settingsToken.value = workerConfig.apiToken;
 
-    if (!workerConfig.workerUrl) {
-      switchView("settings");
-      statusDot.className = "dot";
-      statusText.textContent = "未配置";
-    } else {
-      statusDot.className = "dot green";
-      statusText.textContent = "已连接云端";
-      switchView("save");
-      await loadCloudCategories();
-    }
+    statusDot.className = "dot green";
+    statusText.textContent = "已连接云端";
+    switchView("save");
+    await loadCloudCategories();
   });
 }
 
