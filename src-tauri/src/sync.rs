@@ -80,10 +80,23 @@ pub async fn perform_two_way_sync(db: &Database) -> Result<SyncResult, String> {
         .unwrap_or_else(|| "system".to_string());
     let proxy_url = db.get_setting("proxy_url").unwrap_or_default();
     let proxy_cfg = crate::fetch::ProxyConfig {
-        mode: proxy_mode,
+        mode: proxy_mode.clone(),
         url: proxy_url,
     };
     let client = crate::fetch::build_client_with_proxy(30, Some(&proxy_cfg));
+
+    // 若当前为系统代理模式，准备一个直连客户端作为故障回退（应对代理工具如 v2ray/clash DNS缓存未刷新等情况）
+    let direct_fallback_client = if proxy_mode == "system" {
+        Some(crate::fetch::build_client_with_proxy(
+            20,
+            Some(&crate::fetch::ProxyConfig {
+                mode: "direct".to_string(),
+                url: None,
+            }),
+        ))
+    } else {
+        None
+    };
 
     let format_net_err = |action: &str, e: reqwest::Error| -> String {
         let err_str = e.to_string();
@@ -108,18 +121,38 @@ pub async fn perform_two_way_sync(db: &Database) -> Result<SyncResult, String> {
     // 2. 推送本地变更到 Cloudflare
     if pushed_count > 0 {
         let push_url = format!("{}/api/sync", worker_url);
-        let mut req = client.post(&push_url).json(&CloudSyncPushPayload {
+        let payload = CloudSyncPushPayload {
             categories: local_cats,
             bookmarks: local_bms,
-        });
-        if !token.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", token));
+        };
+
+        let make_push_req = |c: &reqwest::Client| {
+            let mut req = c.post(&push_url).json(&payload);
+            if !token.is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", token));
+            }
+            req
+        };
+
+        let mut push_res = make_push_req(&client).send().await;
+
+        // 若主客户端请求失败或返回 404/5xx，且存在直连回退客户端，则尝试直连
+        let need_fallback = match &push_res {
+            Ok(r) => !r.status().is_success(),
+            Err(_) => true,
+        };
+
+        if need_fallback {
+            if let Some(ref dc) = direct_fallback_client {
+                if let Ok(dr) = make_push_req(dc).send().await {
+                    if dr.status().is_success() {
+                        push_res = Ok(dr);
+                    }
+                }
+            }
         }
 
-        let res = req
-            .send()
-            .await
-            .map_err(|e| format_net_err("推送变更至 Cloudflare 失败", e))?;
+        let res = push_res.map_err(|e| format_net_err("推送变更至 Cloudflare 失败", e))?;
 
         if !res.status().is_success() {
             let status = res.status();
@@ -130,15 +163,32 @@ pub async fn perform_two_way_sync(db: &Database) -> Result<SyncResult, String> {
 
     // 3. 从 Cloudflare 拉取最新增量数据
     let pull_url = format!("{}/api/sync?since={}", worker_url, last_synced_at);
-    let mut req = client.get(&pull_url);
-    if !token.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", token));
+    let make_pull_req = |c: &reqwest::Client| {
+        let mut req = c.get(&pull_url);
+        if !token.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+        req
+    };
+
+    let mut pull_res = make_pull_req(&client).send().await;
+
+    let need_pull_fallback = match &pull_res {
+        Ok(r) => !r.status().is_success(),
+        Err(_) => true,
+    };
+
+    if need_pull_fallback {
+        if let Some(ref dc) = direct_fallback_client {
+            if let Ok(dr) = make_pull_req(dc).send().await {
+                if dr.status().is_success() {
+                    pull_res = Ok(dr);
+                }
+            }
+        }
     }
 
-    let res = req
-        .send()
-        .await
-        .map_err(|e| format_net_err("从 Cloudflare 拉取数据失败", e))?;
+    let res = pull_res.map_err(|e| format_net_err("从 Cloudflare 拉取数据失败", e))?;
 
     if !res.status().is_success() {
         let status = res.status();
@@ -166,4 +216,5 @@ pub async fn perform_two_way_sync(db: &Database) -> Result<SyncResult, String> {
         server_time: pull_data.server_time,
     })
 }
+
 
