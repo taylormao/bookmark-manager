@@ -118,46 +118,57 @@ pub async fn perform_two_way_sync(db: &Database) -> Result<SyncResult, String> {
 
     let pushed_count = local_cats.len() + local_bms.len();
 
-    // 2. 推送本地变更到 Cloudflare
+    // 2. 推送本地变更到 Cloudflare (分批推送，每批 50 条，彻底避免超过 Worker 资源与请求体限制)
     if pushed_count > 0 {
         let push_url = format!("{}/api/sync", worker_url);
-        let payload = CloudSyncPushPayload {
-            categories: local_cats,
-            bookmarks: local_bms,
+        const CHUNK_SIZE: usize = 50;
+
+        let mut cats_to_send = Some(local_cats);
+        let bm_chunks: Vec<Vec<CloudBookmark>> = if local_bms.is_empty() {
+            vec![Vec::new()]
+        } else {
+            local_bms.chunks(CHUNK_SIZE).map(|c| c.to_vec()).collect()
         };
 
-        let make_push_req = |c: &reqwest::Client| {
-            let mut req = c.post(&push_url).json(&payload);
-            if !token.is_empty() {
-                req = req.header("Authorization", format!("Bearer {}", token));
-            }
-            req
-        };
+        for chunk in bm_chunks {
+            let payload = CloudSyncPushPayload {
+                categories: cats_to_send.take().unwrap_or_default(),
+                bookmarks: chunk,
+            };
 
-        let mut push_res = make_push_req(&client).send().await;
+            let make_push_req = |c: &reqwest::Client| {
+                let mut req = c.post(&push_url).json(&payload);
+                if !token.is_empty() {
+                    req = req.header("Authorization", format!("Bearer {}", token));
+                }
+                req
+            };
 
-        // 若主客户端请求失败或返回 404/5xx，且存在直连回退客户端，则尝试直连
-        let need_fallback = match &push_res {
-            Ok(r) => !r.status().is_success(),
-            Err(_) => true,
-        };
+            let mut push_res = make_push_req(&client).send().await;
 
-        if need_fallback {
-            if let Some(ref dc) = direct_fallback_client {
-                if let Ok(dr) = make_push_req(dc).send().await {
-                    if dr.status().is_success() {
-                        push_res = Ok(dr);
+            // 若主客户端请求失败或返回 404/5xx，且存在直连回退客户端，则尝试直连
+            let need_fallback = match &push_res {
+                Ok(r) => !r.status().is_success(),
+                Err(_) => true,
+            };
+
+            if need_fallback {
+                if let Some(ref dc) = direct_fallback_client {
+                    if let Ok(dr) = make_push_req(dc).send().await {
+                        if dr.status().is_success() {
+                            push_res = Ok(dr);
+                        }
                     }
                 }
             }
-        }
 
-        let res = push_res.map_err(|e| format_net_err("推送变更至 Cloudflare 失败", e))?;
+            let res = push_res.map_err(|e| format_net_err("推送变更至 Cloudflare 失败", e))?;
 
-        if !res.status().is_success() {
-            let status = res.status();
-            let text = res.text().await.unwrap_or_default();
-            return Err(format!("云端合并返回错误 ({}): {}", status, text));
+            if !res.status().is_success() {
+                let status = res.status();
+                let text = res.text().await.unwrap_or_default();
+                return Err(format!("云端合并返回错误 ({}): {}", status, text));
+            }
         }
     }
 

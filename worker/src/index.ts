@@ -286,21 +286,27 @@ async function handleSyncPull(url: URL, env: Env): Promise<Response> {
 
   const bookmarks = await env.DB.prepare(
     `SELECT b.id, b.uuid, b.title, b.url, b.url_key, b.icon, b.category_id,
+            c.name as category_name,
             b.valid, b.status_code, b.last_checked_at, b.check_note,
             b.created_at, b.updated_at, b.is_deleted
      FROM bookmarks b
+     LEFT JOIN categories c ON b.category_id = c.id
      WHERE b.updated_at > ?`
   ).bind(since).all();
 
-  // 关联标签
-  const bList = bookmarks.results as any[];
+  // 关联标签（使用优化单次 JOIN 查询，杜绝 IN 语句过长与 CPU 超时）
+  const bList = (bookmarks.results || []) as any[];
   if (bList.length > 0) {
-    const ids = bList.map((b) => b.id).join(",");
     const tagRows = await env.DB.prepare(
-      `SELECT bt.bookmark_id, t.name FROM bookmark_tags bt JOIN tags t ON bt.tag_id = t.id WHERE bt.bookmark_id IN (${ids})`
-    ).all();
+      `SELECT bt.bookmark_id, t.name
+       FROM bookmark_tags bt
+       JOIN tags t ON bt.tag_id = t.id
+       JOIN bookmarks b ON bt.bookmark_id = b.id
+       WHERE b.updated_at > ?`
+    ).bind(since).all();
+
     const tagMap = new Map<number, string[]>();
-    for (const r of tagRows.results as any[]) {
+    for (const r of (tagRows.results || []) as any[]) {
       if (!tagMap.has(r.bookmark_id)) tagMap.set(r.bookmark_id, []);
       tagMap.get(r.bookmark_id)!.push(r.name);
     }
@@ -311,19 +317,25 @@ async function handleSyncPull(url: URL, env: Env): Promise<Response> {
 
   return jsonResponse({
     server_time: now,
-    categories: categories.results,
+    categories: categories.results || [],
     bookmarks: bList,
   });
 }
 
 // 双向增量同步推送与合并
 async function handleSyncPush(request: Request, env: Env): Promise<Response> {
-  const payload: any = await request.json();
+  let payload: any;
+  try {
+    payload = await request.json();
+  } catch {
+    return jsonResponse({ error: "Invalid JSON payload" }, 400);
+  }
+
   const clientCategories: any[] = payload.categories || [];
   const clientBookmarks: any[] = payload.bookmarks || [];
   const now = Math.floor(Date.now() / 1000);
 
-  // 批量合并分类
+  // 1. 批量合并分类
   for (const c of clientCategories) {
     if (!c.name) continue;
     const existing = await env.DB.prepare("SELECT id, updated_at FROM categories WHERE name = ? COLLATE NOCASE").bind(c.name).first<any>();
@@ -338,10 +350,19 @@ async function handleSyncPush(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // 批量合并书签
+  // 建立远程分类名称 -> 远程 id 的映射表，杜绝外键错误
+  const allCats = await env.DB.prepare("SELECT id, name FROM categories WHERE is_deleted = 0").all<any>();
+  const catNameToId = new Map<string, number>();
+  for (const c of (allCats.results || []) as any[]) {
+    if (c.name) catNameToId.set(c.name.toLowerCase(), c.id);
+  }
+
+  // 2. 批量合并书签（支持分类名称动态映射）
   for (const b of clientBookmarks) {
     if (!b.url) continue;
     const urlKey = (b.url_key || b.url).replace(/\/+$/, "");
+    const targetCatId = b.category_name ? (catNameToId.get(b.category_name.toLowerCase()) || null) : null;
+
     const existing = await env.DB.prepare("SELECT id, updated_at FROM bookmarks WHERE url_key = ?").bind(urlKey).first<any>();
 
     let bookmarkId: number;
@@ -349,7 +370,7 @@ async function handleSyncPush(request: Request, env: Env): Promise<Response> {
       const res = await env.DB.prepare(
         `INSERT INTO bookmarks (title, url, url_key, icon, category_id, valid, created_at, updated_at, is_deleted)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).bind(b.title || b.url, b.url, urlKey, b.icon || null, b.category_id || null, b.valid ?? 1, b.created_at || now, b.updated_at || now, b.is_deleted ? 1 : 0).run();
+      ).bind(b.title || b.url, b.url, urlKey, b.icon || null, targetCatId, b.valid ?? 1, b.created_at || now, b.updated_at || now, b.is_deleted ? 1 : 0).run();
       bookmarkId = res.meta.last_row_id;
     } else {
       bookmarkId = existing.id;
@@ -357,12 +378,12 @@ async function handleSyncPush(request: Request, env: Env): Promise<Response> {
         await env.DB.prepare(
           `UPDATE bookmarks SET title = ?, url = ?, icon = coalesce(?, icon), category_id = ?, valid = ?, updated_at = ?, is_deleted = ?
            WHERE id = ?`
-        ).bind(b.title || b.url, b.url, b.icon || null, b.category_id || null, b.valid ?? 1, b.updated_at || now, b.is_deleted ? 1 : 0, bookmarkId).run();
+        ).bind(b.title || b.url, b.url, b.icon || null, targetCatId, b.valid ?? 1, b.updated_at || now, b.is_deleted ? 1 : 0, bookmarkId).run();
       }
     }
 
     // 标签更新
-    if (Array.isArray(b.tags) && !b.is_deleted) {
+    if (Array.isArray(b.tags) && !b.is_deleted && b.tags.length > 0) {
       for (const t of b.tags) {
         const tagName = String(t).trim();
         if (!tagName) continue;
