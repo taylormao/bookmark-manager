@@ -1245,6 +1245,26 @@ static void append_order_by(bmk_buf *sql, bmk_sort_key key, bool asc)
     bmk_buf_append_str(sql, ", b.id ASC");
 }
 
+/* 构造 LIKE 参数：转义 % _ \ 后包裹 %...%，任一分配失败返回 NULL */
+static char *make_like_param(const char *src)
+{
+    bmk_buf tmp;
+    bmk_buf_init(&tmp);
+    bool ok = bmk_buf_append_char(&tmp, '%');
+    for (const char *q = src; ok && *q; q++) {
+        if (*q == '%' || *q == '_' || *q == '\\')
+            ok = bmk_buf_append_char(&tmp, '\\');
+        if (ok) ok = bmk_buf_append_char(&tmp, *q);
+    }
+    if (ok) ok = bmk_buf_append_char(&tmp, '%');
+    if (ok) {
+        char *p = bmk_buf_steal(&tmp);
+        if (p) return p;
+    }
+    bmk_buf_free(&tmp);
+    return NULL;
+}
+
 bmk_err bmk_bookmark_query(bmk_db *db, const bmk_filter *f,
                            bmk_sort_key sort, bool ascending,
                            bmk_bookmark ***out, size_t *out_n)
@@ -1323,55 +1343,54 @@ bmk_err bmk_bookmark_query(bmk_db *db, const bmk_filter *f,
         BMK_ERROR("query prepare failed: %s", sqlite3_errmsg(db->h));
         e = BMK_ERR_DB; goto done;
     }
-    bmk_buf_free(&sql);
 
-    /* LIKE 参数：转义 % 与 _ 后包裹 %...% */
-    #define MAKE_LIKE(dst, src)                                    \
-        do {                                                       \
-            bmk_buf tmp; bmk_buf_init(&tmp);                       \
-            bmk_buf_append_char(&tmp, '%');                        \
-            for (const char *q = (src); *q; q++) {                 \
-                if (*q == '%' || *q == '_' || *q == '\\')          \
-                    bmk_buf_append_char(&tmp, '\\');               \
-                bmk_buf_append_char(&tmp, *q);                     \
-            }                                                      \
-            bmk_buf_append_char(&tmp, '%');                        \
-            (dst) = bmk_buf_steal(&tmp);                           \
-        } while (0)
-
+    /* LIKE 参数分配失败必须中止，否则会绑定被截断的模式（甚至 NULL），
+     * 静默返回错误的结果集。 */
     if (f->keyword && *f->keyword) {
-        MAKE_LIKE(p1, f->keyword);
+        p1 = make_like_param(f->keyword);
+        if (!p1) { e = BMK_ERR_NOMEM; goto done; }
         sqlite3_bind_text(st, 1, p1, -1, SQLITE_STATIC);
     }
     if (f->url_contains && *f->url_contains) {
-        MAKE_LIKE(p2, f->url_contains);
+        p2 = make_like_param(f->url_contains);
+        if (!p2) { e = BMK_ERR_NOMEM; goto done; }
         sqlite3_bind_text(st, 2, p2, -1, SQLITE_STATIC);
     }
     if (f->domain && *f->domain) {
-        MAKE_LIKE(p3, f->domain);
+        p3 = make_like_param(f->domain);
+        if (!p3) { e = BMK_ERR_NOMEM; goto done; }
         sqlite3_bind_text(st, 3, p3, -1, SQLITE_STATIC);
     }
-    #undef MAKE_LIKE
 
     size_t cap = 64;
     list = (bmk_bookmark **)calloc(cap, sizeof(*list));
     if (!list) { e = BMK_ERR_NOMEM; goto done; }
-    while (sqlite3_step(st) == SQLITE_ROW) {
+
+    int step_rc;
+    while ((step_rc = sqlite3_step(st)) == SQLITE_ROW) {
         if (n == cap) {
             cap *= 2;
             bmk_bookmark **nl = (bmk_bookmark **)realloc(list, cap * sizeof(*list));
-            if (!nl) break;
+            if (!nl) { e = BMK_ERR_NOMEM; goto done; }
             list = nl;
         }
         bmk_bookmark *b = row_to_bookmark(st);
-        if (!b) break;
+        if (!b) { e = BMK_ERR_NOMEM; goto done; }
         load_tags_for(db, b);
         list[n++] = b;
     }
+    /* step 出错时不能以「部分结果 + BMK_OK」返回，否则上层据此做删除/合并会漏记录 */
+    if (step_rc != SQLITE_DONE) {
+        set_error(db, sqlite3_errmsg(db->h));
+        e = BMK_ERR_DB; goto done;
+    }
+
     *out = list;
     *out_n = n;
     list = NULL;   /* 转移所有权 */
 done:
+    bmk_buf_free(&sql);
+    if (e != BMK_OK) bmk_bookmark_list_free(list, n);
     sqlite3_finalize(st);
     free(p1); free(p2); free(p3);
     BMK_DB_UNLOCK(db);

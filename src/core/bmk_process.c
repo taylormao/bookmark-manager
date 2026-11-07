@@ -9,18 +9,37 @@
 #include <string.h>
 
 #ifdef _WIN32
-#  include <windows.h>
+/* winsock2.h 必须早于 windows.h，否则会拉入冲突的 winsock.h 声明 */
 #  include <winsock2.h>
+#  include <windows.h>
 #  include <direct.h>
 #else
 #  include <errno.h>
 #  include <fcntl.h>
+#  include <pthread.h>
 #  include <signal.h>
 #  include <sys/socket.h>
 #  include <sys/types.h>
 #  include <sys/wait.h>
 #  include <netinet/in.h>
 #  include <unistd.h>
+#endif
+
+/*
+ * 进程级 working directory 是共享状态：bmk_proc_run 为支持 cwd 用
+ * 「切过去 → popen → 切回来」实现，并发调用会互相改写对方的工作目录。
+ * 当前调用方（同步流程、自测）并不并发，但该约束只靠口头约定太脆弱，
+ * 这里用互斥把「切目录 → 恢复」整段串行化；popen 阻塞期间持锁是有意的
+ * 取舍——受影响的只是同一进程内的其它子进程调用，而不是网络/UI 线程。
+ */
+#ifdef _WIN32
+static SRWLOCK g_proc_cwd_lock = SRWLOCK_INIT;
+#  define PROC_CWD_LOCK()   AcquireSRWLockExclusive(&g_proc_cwd_lock)
+#  define PROC_CWD_UNLOCK() ReleaseSRWLockExclusive(&g_proc_cwd_lock)
+#else
+static pthread_mutex_t g_proc_cwd_lock = PTHREAD_MUTEX_INITIALIZER;
+#  define PROC_CWD_LOCK()   pthread_mutex_lock(&g_proc_cwd_lock)
+#  define PROC_CWD_UNLOCK() pthread_mutex_unlock(&g_proc_cwd_lock)
 #endif
 
 struct bmk_proc {
@@ -37,22 +56,57 @@ struct bmk_proc {
 /* ------------------------------------------------------------------ */
 
 #ifdef _WIN32
-/* Windows CreateProcess 需要单一命令行串，参数含空格时加引号 */
+/*
+ * Windows CRT 命令行解析规则（CreateProcess 与 MSVCRT 一致）：
+ *   - 参数为空或含空格/制表符时必须用双引号包裹；
+ *   - 字面引号前的反斜杠需成对（2n 个反斜杠 + '\"' => n 个反斜杠 + 引号）；
+ *   - 闭合引号前的尾随反斜杠同样要成对，否则会转义闭合引号本身。
+ * 旧实现只处理了 '"'，路径以反斜杠结尾或含制表符时会被错误切分。
+ */
+static bool append_crt_arg(bmk_buf *b, const char *arg)
+{
+    bool need_quote = arg[0] == '\0' || strchr(arg, ' ') != NULL ||
+                      strchr(arg, '\t') != NULL;
+    if (need_quote && !bmk_buf_append_char(b, '"')) return false;
+
+    size_t backslashes = 0;
+    for (const char *p = arg; ; p++) {
+        if (*p == '\\') { backslashes++; continue; }
+
+        if (*p == '"') {
+            for (size_t i = 0; i < backslashes * 2 + 1; i++)
+                if (!bmk_buf_append_char(b, '\\')) return false;
+            if (!bmk_buf_append_char(b, '"')) return false;
+        } else {
+            for (size_t i = 0; i < backslashes; i++)
+                if (!bmk_buf_append_char(b, '\\')) return false;
+            if (!*p) {
+                if (need_quote) {
+                    for (size_t i = 0; i < backslashes; i++)
+                        if (!bmk_buf_append_char(b, '\\')) return false;
+                }
+                break;
+            }
+            if (!bmk_buf_append_char(b, *p)) return false;
+        }
+        backslashes = 0;
+    }
+    return !need_quote || bmk_buf_append_char(b, '"');
+}
+
+/* Windows CreateProcess 需要单一命令行串 */
 static char *build_cmdline(const char *const *argv)
 {
     bmk_buf b;
     bmk_buf_init(&b);
     for (size_t i = 0; argv[i]; i++) {
-        if (i) bmk_buf_append_char(&b, ' ');
-        bool need_quote = strchr(argv[i], ' ') != NULL || argv[i][0] == '\0';
-        if (need_quote) bmk_buf_append_char(&b, '"');
-        for (const char *p = argv[i]; *p; p++) {
-            if (*p == '"') bmk_buf_append_char(&b, '\\');
-            bmk_buf_append_char(&b, *p);
-        }
-        if (need_quote) bmk_buf_append_char(&b, '"');
+        if (i && !bmk_buf_append_char(&b, ' ')) goto fail;
+        if (!append_crt_arg(&b, argv[i])) goto fail;
     }
     return bmk_buf_steal(&b);
+fail:
+    bmk_buf_free(&b);
+    return NULL;
 }
 #endif
 
@@ -157,6 +211,46 @@ void bmk_proc_free(bmk_proc *p)
 /* 同步执行并捕获输出                                                  */
 /* ------------------------------------------------------------------ */
 
+/*
+ * popen 会经过命令解释器（Windows: cmd.exe /c；POSIX: /bin/sh -c）。
+ * argv 中混有用户可控值（git remote / branch / 工作目录），旧实现仅按
+ * 「含空格」加引号，不转义任何元字符，可被注入附加命令。
+ *
+ * cmd.exe 没有可靠的通用转义方案，因此在拼串前直接拒绝危险字符：
+ * 宁可返回 BMK_ERR_INVALID_ARG 中止，也不执行被篡改的命令。
+ * 保留 '%'：git URL 的百分号编码需要它，且变量展开不会引入新的命令分隔符；
+ * 保留括号/冒号等 URL 常用字符。
+ */
+static bool shell_arg_is_safe(const char *s)
+{
+    static const char forbidden[] = "&|<>^!`$;\"'";
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p < 0x20 || *p == 0x7f) return false;
+        if (strchr(forbidden, (int)*p) != NULL) return false;
+    }
+    return true;
+}
+
+/* 校验通过后引用参数；危险字符已被拒绝，故无需处理内部引号。 */
+static bool append_shell_arg(bmk_buf *b, const char *arg)
+{
+    if (!shell_arg_is_safe(arg)) return false;
+
+    bool quote = arg[0] == '\0' || strchr(arg, ' ') != NULL;
+    if (quote && !bmk_buf_append_char(b, '"')) return false;
+    if (!bmk_buf_append_str(b, arg)) return false;
+
+    /* 以反斜杠结尾时闭合引号会被转义，需把尾随反斜杠加倍 */
+    if (quote) {
+        size_t trailing = 0;
+        for (size_t i = strlen(arg); i > 0 && arg[i - 1] == '\\'; i--)
+            trailing++;
+        for (size_t i = 0; i < trailing; i++)
+            if (!bmk_buf_append_char(b, '\\')) return false;
+    }
+    return !quote || bmk_buf_append_char(b, '"');
+}
+
 bmk_err bmk_proc_run(const char *const *argv, const char *cwd,
                      char **out_text, int *out_code)
 {
@@ -165,32 +259,45 @@ bmk_err bmk_proc_run(const char *const *argv, const char *cwd,
     if (out_code) *out_code = -1;
 
     /*
-     * 用 popen 捕获合并输出。为支持 cwd，先切换目录再恢复
-     * （调用集中在同步流程中，不并发）。
+     * 先构建并校验命令串：校验不依赖 cwd，失败时无需切换/恢复目录。
+     * 再用 popen 捕获合并输出；为支持 cwd，调用期间切换目录并恢复。
      */
+    bmk_buf cmd;
+    bmk_buf_init(&cmd);
+    bool cmd_ok = true;
+    for (size_t i = 0; argv[i] && cmd_ok; i++) {
+        if (i) cmd_ok = bmk_buf_append_char(&cmd, ' ');
+        if (cmd_ok) cmd_ok = append_shell_arg(&cmd, argv[i]);
+    }
+    if (cmd_ok) cmd_ok = bmk_buf_append_str(&cmd, " 2>&1");
+    if (!cmd_ok) {
+        bmk_buf_free(&cmd);
+        BMK_WARN("reject subprocess: unsafe shell characters or out of memory");
+        return BMK_ERR_INVALID_ARG;
+    }
+
+    bool cwd_locked = false;
     char *saved_cwd = NULL;
     if (cwd && *cwd) {
+        PROC_CWD_LOCK();
+        cwd_locked = true;
         char buf[4096];
 #ifdef _WIN32
         if (_getcwd(buf, sizeof(buf))) saved_cwd = bmk_strdup(buf);
-        if (_chdir(cwd) != 0) { free(saved_cwd); return BMK_ERR_IO; }
+        if (_chdir(cwd) != 0) {
+            PROC_CWD_UNLOCK();
+            cwd_locked = false;
+            free(saved_cwd); bmk_buf_free(&cmd); return BMK_ERR_IO;
+        }
 #else
         if (getcwd(buf, sizeof(buf))) saved_cwd = bmk_strdup(buf);
-        if (chdir(cwd) != 0) { free(saved_cwd); return BMK_ERR_IO; }
+        if (chdir(cwd) != 0) {
+            PROC_CWD_UNLOCK();
+            cwd_locked = false;
+            free(saved_cwd); bmk_buf_free(&cmd); return BMK_ERR_IO;
+        }
 #endif
     }
-
-    /* 拼接命令行（含 2>&1） */
-    bmk_buf cmd;
-    bmk_buf_init(&cmd);
-    for (size_t i = 0; argv[i]; i++) {
-        if (i) bmk_buf_append_char(&cmd, ' ');
-        bool q = strchr(argv[i], ' ') != NULL;
-        if (q) bmk_buf_append_char(&cmd, '"');
-        bmk_buf_append_str(&cmd, argv[i]);
-        if (q) bmk_buf_append_char(&cmd, '"');
-    }
-    bmk_buf_append_str(&cmd, " 2>&1");
 
 #ifdef _WIN32
     FILE *fp = _popen(cmd.data, "r");
@@ -208,6 +315,7 @@ bmk_err bmk_proc_run(const char *const *argv, const char *cwd,
 #endif
             free(saved_cwd);
         }
+        if (cwd_locked) { PROC_CWD_UNLOCK(); cwd_locked = false; }
         return BMK_ERR_SUBPROCESS;
     }
 
@@ -233,6 +341,7 @@ bmk_err bmk_proc_run(const char *const *argv, const char *cwd,
 #endif
         free(saved_cwd);
     }
+    if (cwd_locked) { PROC_CWD_UNLOCK(); cwd_locked = false; }
 
     if (out_code) *out_code = code;
     if (out_text) *out_text = bmk_buf_steal(&out);

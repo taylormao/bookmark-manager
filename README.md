@@ -21,7 +21,7 @@
 | 组件 | 说明 |
 |---|---|
 | 语言 | C11 |
-| 构建 | CMake ≥ 3.20 + Ninja |
+| 构建 | CMake ≥ 3.20（生成器按平台自选：Ninja / MinGW Makefiles） |
 | 数据库 | SQLite3 ≥ 3.35（WAL） |
 | 网络 | libcurl ≥ 7.85 |
 | HTML 解析 | Gumbo-parser（标题/图标抓取） |
@@ -48,16 +48,53 @@ bookmark-manager/
 │   ├── cli/              # bmk-cli 命令行工具
 │   └── ui/               # GTK4 图形界面
 ├── tests/                # CTest 单元测试
-└── data/                 # 示例书签、mock 服务器等
+└── data/                 # 默认图标、示例书签（mock server 内嵌于 tests/test_validate.c）
 ```
 
 ## 构建
 
+前置依赖（只需头文件与链接库；pkg-config 的 `.pc` 文件是可选加速路径）：
+
+- SQLite3 ≥ 3.35
+- libcurl ≥ 7.85
+- cJSON：**已内置**于 `third_party/cJSON/`，无需系统包或 `.pc`
+- Gumbo-parser（可选，缺失时关闭标题/图标抓取）
+- GTK4（可选，缺失时跳过 `src/ui`）
+- Windows 另需 `git` CLI 与运行时 DLL（见 `cmake/BMKWindowsRuntime.cmake`）
+
+常规构建（生成器按平台自选，不必固定 `-G Ninja`）：
+
 ```bash
-cmake -S . -B build -G Ninja
+cmake -S . -B build
 cmake --build build
-ctest --test-dir build
+ctest --test-dir build --output-on-failure
 ```
+
+Windows / scoop 环境下已验证通过的一套完整命令（**不装任何新包、不依赖
+scoop 的失效 `current` junction**）：
+
+```bash
+cmake -S . -B build -G "MinGW Makefiles" \
+  -DCMAKE_C_COMPILER=<mingw>/bin/gcc.exe \
+  -DCMAKE_MAKE_PROGRAM=<mingw>/bin/mingw32-make.exe \
+  -DSQLITE3_ROOT=<mingw>/opt \
+  -DCURL_ROOT=<scoop-curl> \
+  -DBMK_MINGW_BIN=<scoop-curl>/bin \
+  -DBMK_BUILD_UI=OFF
+cmake --build build -j 4
+ctest --test-dir build --output-on-failure
+```
+
+要点：
+
+- SQLite3 / libcurl 优先走 pkg-config；找不到时按 `-D<DEP>_ROOT` 或
+  `CMAKE_PREFIX_PATH` 用 `find_path` / `find_library` 回退，也可用
+  `-D<DEP>_INCLUDE_DIR` / `-D<DEP>_LIBRARY` 直接指定。
+- `BMK_MINGW_BIN` 指向含运行时 DLL 的目录（`libcurl-4.dll` 或 scoop 的
+  `libcurl-x64.dll`），构建时自动拷到产物旁，`ctest` 无需手工设置 PATH。
+- 若 `git` 的 scoop shim 失效，运行 `ctest` 前把真实 `git.exe` 所在目录加入 PATH，
+  否则 `test_sync` 会失败（不是代码问题）。
+- 升级工具链后旧 `build/` 缓存里的绝对路径会失效，请清空构建目录重新 configure。
 
 > 界面（`src/ui`）仅在检测到 GTK4 时构建；即使没有 GTK4，`libbookmark_core` 与 CLI 也能正常编译与测试。
 
@@ -105,13 +142,21 @@ bmk-cli sync s3
 
 ## 测试
 
-`tests/` 覆盖（均针对 libcore，不依赖 GTK）：
+`tests/` 为 CTest + 轻量断言宏（不引入大型框架），共 8 个测试，GTK4 可用时另注册 1 个 GUI 自测：
 
-- 附录 B URL 归一化 17 条用例 + 边界
-- 数据层：分类递归删除/计数、标签大小写合并、排序（FR-09）、筛选（FR-12）
-- 导入导出：层级还原、实体转义、往返一致性、取消回滚（FR-07）
-- 合并规则（FR-16）与校验判定（FR-14）
-- vless 解析与 xray 配置生成（附录 C）
+| 测试 | 覆盖 |
+|---|---|
+| `test_url` | 附录 B URL 归一化 17 条用例 + 边界 |
+| `test_db` | 分类递归删除/计数、标签大小写合并、排序（FR-09）、筛选（FR-12） |
+| `test_netscape` | 层级还原、实体转义、往返一致性、取消回滚（FR-07） |
+| `test_merge` | 合并规则（FR-16） |
+| `test_validate` | 批量校验判定（FR-14），内嵌本地 HTTP mock server |
+| `test_vless` | vless 解析与 xray 配置生成（附录 C） |
+| `test_sync` | GitHub 同步（需要 `git` CLI） |
+| `test_backup` | 备份保留策略（FR-06/16/21） |
+| `gui-selftest` | GTK4 界面 15 步自动化自测（仅 Windows + GTK4 可用时） |
+
+当环境不满足（缺 `git`、端口被占用等）导致用例被跳过时，测试返回 `77`，CTest 会将其标记为 **Skipped** 而不是计入通过，避免零断言假绿。
 
 ## 许可
 

@@ -7,6 +7,7 @@
  */
 #include "test_util.h"
 #include "bmk_sync.h"
+#include "bmk_backup.h"
 #include "bmk_db.h"
 #include "bmk_process.h"
 #include "bmk_netscape.h"
@@ -18,6 +19,8 @@
 #ifdef _WIN32
 #  include <windows.h>
 #  include <process.h>
+#  include <io.h>
+#  include <stdint.h>
 #  define SEP '\\'
 #else
 #  include <unistd.h>
@@ -144,7 +147,7 @@ static int64_t add_bookmark(bmk_db *db, const char *title, const char *url)
 static void test_github_push_restore(void)
 {
     char *git = bmk_which("git");
-    if (!git) { printf("SKIP test_sync: git not found in PATH\n"); return; }
+    if (!git) { TEST_SKIP("test_sync: git not found in PATH"); return; }
 
     char root[P_BUF];
     make_temp_dir(root, sizeof root, "sync");
@@ -280,7 +283,7 @@ static void to_forward_slashes(char *dst, size_t cap, const char *src)
 static void test_github_commit_failure(void)
 {
     char *git = bmk_which("git");
-    if (!git) { printf("SKIP test_sync: git not found in PATH\n"); return; }
+    if (!git) { TEST_SKIP("test_sync: git not found in PATH"); return; }
 
     char root[P_BUF];
     make_temp_dir(root, sizeof root, "cmt");
@@ -330,7 +333,7 @@ static void test_github_commit_failure(void)
 static void test_github_restore_first_time(void)
 {
     char *git = bmk_which("git");
-    if (!git) { printf("SKIP test_sync: git not found in PATH\n"); return; }
+    if (!git) { TEST_SKIP("test_sync: git not found in PATH"); return; }
 
     char root[P_BUF];
     make_temp_dir(root, sizeof root, "rst");
@@ -398,7 +401,7 @@ static void test_github_restore_first_time(void)
 static void test_pat_not_persisted(void)
 {
     char *git = bmk_which("git");
-    if (!git) { printf("SKIP test_sync: git not found in PATH\n"); return; }
+    if (!git) { TEST_SKIP("test_sync: git not found in PATH"); return; }
 
     char root[P_BUF];
     make_temp_dir(root, sizeof root, "pat");
@@ -480,6 +483,163 @@ static void test_invalid_args(void)
     remove_tree(dir);
 }
 
+/* 在目录中查找文件名以 prefix 开头的第一个文件（备份断言用） */
+#ifdef _WIN32
+static int dir_find_prefix(const char *dir, const char *prefix,
+                           char *out, size_t sz)
+{
+    char pat[P_BUF];
+    snprintf(pat, sizeof pat, "%s%c%s*", dir, SEP, prefix);
+    struct _finddata_t fd;
+    intptr_t h = _findfirst(pat, &fd);
+    if (h == -1) return 0;
+    snprintf(out, sz, "%s%c%s", dir, SEP, fd.name);
+    _findclose(h);
+    return 1;
+}
+#else
+static int dir_find_prefix(const char *dir, const char *prefix,
+                           char *out, size_t sz)
+{
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, prefix, strlen(prefix)) == 0) {
+            snprintf(out, sz, "%s%c%s", dir, SEP, e->d_name);
+            closedir(d);
+            return 1;
+        }
+    }
+    closedir(d);
+    return 0;
+}
+#endif
+
+/* git 分叉：远端被第三方更新 → 备份远端旧版 + force-with-lease 以本地为准
+ * （需求 §7.2 场景 2，FR-18 第 4c/f/5 条） */
+static void test_github_divergence(void)
+{
+    char *git = bmk_which("git");
+    if (!git) { TEST_SKIP("test_sync: git not found in PATH"); return; }
+
+    char root[P_BUF];
+    make_temp_dir(root, sizeof root, "div");
+    char remote[P_BUF], data_dir[P_BUF], sync_dir[P_BUF], dbp[P_BUF];
+    char clone2[P_BUF], backups[P_BUF];
+    snprintf(remote,   sizeof remote,   "%s%cremote.git", root, SEP);
+    snprintf(data_dir, sizeof data_dir, "%s%cdata", root, SEP);
+    snprintf(sync_dir, sizeof sync_dir, "%s%csync", root, SEP);
+    snprintf(dbp,      sizeof dbp,      "%s%cbookmarks.db", data_dir, SEP);
+    snprintf(clone2,   sizeof clone2,   "%s%cclone2", root, SEP);
+    snprintf(backups,  sizeof backups,  "%s%cbackups", data_dir, SEP);
+    bmk_mkdirs(data_dir);
+    bmk_mkdirs(sync_dir);
+
+    const char *init[] = { git, "init", "--bare", "-b", "main", remote, NULL };
+    CHECK_EQ(bmk_proc_run(init, NULL, NULL, NULL), BMK_OK, "创建 bare 仓库");
+
+    bmk_db *db = NULL;
+    CHECK_EQ(bmk_db_open(dbp, &db), BMK_OK, "打开数据库");
+    if (!db) { free(git); remove_tree(root); return; }
+    add_bookmark(db, "本地一", "https://example.com/aaa");
+
+    /* 分叉备份写到 <data>/backups：g_backup_dir 是进程级全局，需显式声明 */
+    CHECK_EQ(bmk_backup_set_dir(backups), BMK_OK, "声明备份目录");
+
+    char repo_fwd[P_BUF];
+    size_t rl = strlen(remote);
+    for (size_t i = 0; i < rl; i++)
+        repo_fwd[i] = (remote[i] == '\\') ? '/' : remote[i];
+    repo_fwd[rl] = '\0';
+
+    bmk_github_cfg cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.repo     = repo_fwd;
+    cfg.branch   = "main";
+    cfg.sync_dir = sync_dir;
+    cfg.db_path  = dbp;
+    cfg.push_db  = false;
+
+    CHECK_EQ(bmk_sync_github_push(db, &cfg, NULL, NULL), BMK_OK,
+             "首次 push 建立基线");
+
+    /* 第三方副本：clone → 覆盖 bookmarks.html → commit → push（远端侧新提交） */
+    const char *cl[] = { git, "clone", repo_fwd, clone2, NULL };
+    CHECK_EQ(bmk_proc_run(cl, NULL, NULL, NULL), BMK_OK, "第三方 clone 远端");
+
+    char fp2[P_BUF];
+    snprintf(fp2, sizeof fp2, "%s%cbookmarks.html", clone2, SEP);
+    FILE *fp = fopen(fp2, "wb");
+    CHECK(fp != NULL, "打开第三方副本 bookmarks.html");
+    if (fp) {
+        fputs("<!DOCTYPE NETSCAPE-Bookmark-file-1>\n<DL><p>\n"
+              "<DT><A HREF=\"https://remote-side.example/\">REMOTE-SIDE-CHANGE</A>\n"
+              "</DL><p>\n", fp);
+        fclose(fp);
+    }
+    const char *add2[]    = { git, "-C", clone2, "add", "-A", NULL };
+    const char *commit2[] = { git, "-C", clone2, "commit", "-m",
+                              "remote-side", NULL };
+    const char *push2[]   = { git, "-C", clone2, "push", "origin", "main", NULL };
+    CHECK_EQ(bmk_proc_run(add2, NULL, NULL, NULL), BMK_OK, "第三方 add");
+    CHECK_EQ(bmk_proc_run(commit2, NULL, NULL, NULL), BMK_OK, "第三方 commit");
+    CHECK_EQ(bmk_proc_run(push2, NULL, NULL, NULL), BMK_OK, "第三方 push");
+
+    /* 本地先产生一个未推送提交：模拟「上次同步后本地又有变化」。
+     * 这样第二次 push 时 HEAD 与 origin/main 各自领先 → 真分叉。 */
+    char lfp[P_BUF];
+    snprintf(lfp, sizeof lfp, "%s%cbookmarks.html", sync_dir, SEP);
+    FILE *lf = fopen(lfp, "wb");
+    CHECK(lf != NULL, "打开本地工作区 bookmarks.html");
+    if (lf) {
+        fputs("<!DOCTYPE NETSCAPE-Bookmark-file-1>\n<DL><p>\n"
+              "<DT><A HREF=\"https://local-only.example/\">LOCAL-ONLY</A>\n"
+              "</DL><p>\n", lf);
+        fclose(lf);
+    }
+    const char *addl[]  = { git, "-C", sync_dir, "add", "-A", NULL };
+    const char *commitl[] = { git, "-C", sync_dir, "commit", "-m",
+                              "local-only change", NULL };
+    CHECK_EQ(bmk_proc_run(addl, NULL, NULL, NULL), BMK_OK, "本地领先 add");
+    CHECK_EQ(bmk_proc_run(commitl, NULL, NULL, NULL), BMK_OK, "本地领先 commit");
+
+    /* 再新增一条后同步：HEAD 与 origin/main 分叉，冲突策略 = 以本地为准 */
+    add_bookmark(db, "本地二", "https://example.net/ccc");
+    CHECK_EQ(bmk_sync_github_push(db, &cfg, NULL, NULL), BMK_OK,
+             "分叉后 push 成功（备份远端旧版 + force-with-lease）");
+
+    /* a. 远端旧版被备份且包含第三方改动（可追溯） */
+    char backup_path[P_BUF];
+    if (dir_find_prefix(backups, "remote_", backup_path, sizeof backup_path)) {
+        char *content = NULL;
+        size_t clen = 0;
+        if (bmk_read_file(backup_path, &content, &clen) == BMK_OK && content) {
+            CHECK(strstr(content, "REMOTE-SIDE-CHANGE") != NULL,
+                  "备份内容为远端旧版（含第三方改动）");
+        } else {
+            CHECK(0, "备份文件可读取");
+        }
+        free(content);
+    } else {
+        CHECK(0, "分叉时生成 remote_*.html 备份");
+    }
+
+    /* b. 远端最终为本地内容（以本地为准） */
+    char *out = NULL;
+    int code = -1;
+    const char *cat[] = { git, "--git-dir", remote, "cat-file", "-p",
+                          "HEAD:bookmarks.html", NULL };
+    CHECK_EQ(bmk_proc_run(cat, NULL, &out, &code), BMK_OK, "读取远端最终内容");
+    CHECK(code == 0 && out && strstr(out, "example.net/ccc") != NULL,
+          "远端最终为本地内容（ccc）");
+    free(out);
+
+    bmk_db_close(db);
+    free(git);
+    remove_tree(root);
+}
+
 int main(void)
 {
     set_git_env();
@@ -487,6 +647,7 @@ int main(void)
     test_github_push_restore();
     test_github_commit_failure();
     test_github_restore_first_time();
+    test_github_divergence();
     test_pat_not_persisted();
     test_invalid_args();
     return test_report("同步（本地 git mock）");

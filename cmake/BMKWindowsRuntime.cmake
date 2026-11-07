@@ -38,20 +38,20 @@ function(bmk_windows_dll_dir out_var)
     set(${out_var} "" PARENT_SCOPE)
 endfunction()
 
-# 解析一组 DLL 的绝对路径；缺失的给出警告（不致命，构建继续）。
+# 解析一组 DLL 的绝对路径。清单列的是不同工具链可能使用的文件名，
+# 大部分不存在属正常情况，只有「一个都没找到」才告警（不致命，构建继续）。
 function(bmk_resolve_runtime_dlls out_list)
     bmk_windows_dll_dir(_dll_dir)
     set(resolved)
-    set(missing)
     foreach(dll IN LISTS ARGN)
         if(_dll_dir AND EXISTS "${_dll_dir}/${dll}")
             list(APPEND resolved "${_dll_dir}/${dll}")
-        else()
-            list(APPEND missing "${dll}")
         endif()
     endforeach()
-    if(missing)
-        message(WARNING "bmk: 运行时 DLL 缺失（可能影响直接运行/ctest）：${missing}")
+    if(NOT resolved)
+        message(WARNING
+          "bmk: 未从 ${_dll_dir} 找到任何运行时 DLL；"
+          "请用 -DBMK_MINGW_BIN=<含 DLL 的目录> 指定，否则 ctest 可能无法启动 exe")
     endif()
     set(${out_list} "${resolved}" PARENT_SCOPE)
 endfunction()
@@ -79,8 +79,11 @@ endfunction()
 #   - libgumbo-3.dll：仅系统 DLL（pkg-config 共享库回退时使用）；
 #   - 附带 gcc 运行库（libgcc_s_seh / libwinpthread / libstdc++），
 #     与 dist 发布包保持一致，防个别 DLL 间接依赖。
+# scoop 的 curl 包把 DLL 命名为 libcurl-x64.dll，MSYS2/mingw64 则是
+# libcurl-4.dll；两者都列出，由 bmk_resolve_runtime_dlls 挑实际存在的那个。
 set(BMK_CORE_RUNTIME_DLLS
     libcurl-4.dll
+    libcurl-x64.dll
     libsqlite3-0.dll
     libgumbo-3.dll
     libbrotlidec.dll

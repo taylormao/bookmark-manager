@@ -57,9 +57,11 @@ const unsigned char *bmk_default_icon(size_t *len);
 const char          *bmk_default_icon_mime(void);
 
 /*
- * 便携版 CA 证书：Windows 下若 exe 同目录存在 ca-bundle.crt 则显式指定，
- * 避免发布环境缺系统证书导致 https 全部误判 tls_failed。其他平台或文件缺失时
- * 保持 libcurl 默认行为。handle 为 CURL*。
+ * curl handle 的安全默认值，所有发起网络请求的路径都应在 init 后调用：
+ *   - 协议白名单仅允许 http/https（含重定向），阻断 file:/gopher: 等 SSRF 面；
+ *   - 便携版 CA 证书：Windows 下若 exe 同目录存在 ca-bundle.crt 则显式指定，
+ *     避免发布环境缺系统证书导致 https 全部误判 tls_failed。
+ * 其他平台或证书文件缺失时保持 libcurl 默认行为。handle 为 CURL*。
  */
 void bmk_curl_set_default_cainfo(void *curl_handle);
 

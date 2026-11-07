@@ -42,7 +42,13 @@ static void usage(void)
 "  tags                    打印标签及使用数\n"
 "  stats                   打印统计\n"
 "  normalize <url>...      打印 url_key（附录 B）\n"
-"  proxy list|add <vless://...>|test <id>|start <id>|stop <id>\n"
+"  proxy list\n"
+"  proxy add <vless://...>   添加 VLESS 节点\n"
+"  proxy add --type http|socks5 --host H --port P [--user U --pass P] [--name N]\n"
+"                          添加普通代理节点并启用\n"
+"  proxy check --type http|socks5 --host H --port P [--user U --pass P] [--url URL]\n"
+"                          对未保存的配置做 TCP/握手/目标站分层校验\n"
+"  proxy test <id> [--url URL]|start <id>|stop <id>\n"
 "  sync github|s3          执行一次云端同步\n"
 "  backup                  手动全量备份\n"
 "  set <key> <value>       写入设置\n"
@@ -595,9 +601,79 @@ static int cmd_stats(bmk_app *app)
     return 0;
 }
 
+/* 解析 --type/--host/--port/--user/--pass/--name/--url，字符串字段为堆副本。
+ * 调用方负责 bmk_node_free；--url 指向 argv 或调用方的缓冲区，不接管所有权。 */
+static void parse_proxy_opts(int argc, char **argv, int start,
+                             bmk_node *n, const char **test_url)
+{
+    for (int i = start; i < argc; i++) {
+        if (i + 1 >= argc) break;
+        if      (strcmp(argv[i], "--type") == 0) {
+            const char *v = argv[++i];
+            n->type = (strcmp(v, "socks5") == 0) ? BMK_NODE_SOCKS5 : BMK_NODE_HTTP;
+        } else if (strcmp(argv[i], "--host") == 0) {
+            free(n->host); n->host = bmk_strdup(argv[++i]);
+        } else if (strcmp(argv[i], "--port") == 0) {
+            n->port = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--user") == 0) {
+            free(n->username); n->username = bmk_strdup(argv[++i]);
+        } else if (strcmp(argv[i], "--pass") == 0) {
+            free(n->password); n->password = bmk_strdup(argv[++i]);
+        } else if (strcmp(argv[i], "--name") == 0) {
+            free(n->name); n->name = bmk_strdup(argv[++i]);
+        } else if (strcmp(argv[i], "--url") == 0) {
+            *test_url = argv[++i];
+        }
+        /* 未知选项忽略即可，不要回退 i，否则 for 的 i++ 会原地打转 */
+    }
+}
+
+static void print_proxy_check(const bmk_proxy_check *chk)
+{
+    static const char *kStage[] = { "TCP", "Handshake", "Target" };
+    for (int i = 0; i < BMK_PCHK_STAGES; i++) {
+        const char *st = (chk->state[i] == BMK_PCHK_OK)   ? "OK"
+                       : (chk->state[i] == BMK_PCHK_FAIL) ? "FAIL" : "SKIP";
+        printf("%-9s %-4s %4ldms  %s\n", kStage[i], st, chk->ms[i], chk->detail[i]);
+    }
+    printf("结论: %s (%s)\n", chk->usable ? "代理可用" : "代理不可用",
+           bmk_err_str(chk->err));
+    if (chk->usable && chk->state[BMK_PCHK_TARGET] == BMK_PCHK_FAIL)
+        printf("注意: 代理本身可用，但目标站不通。\n");
+}
+
 static int cmd_proxy(bmk_app *app, int argc, char **argv)
 {
     if (argc < 1) { fprintf(stderr, "错误: 缺少子命令\n"); return 2; }
+
+    /* 对未保存的临时配置做分层校验：不写库、不启动进程 */
+    if (strcmp(argv[0], "check") == 0) {
+        bmk_node nd;
+        memset(&nd, 0, sizeof nd);
+        nd.type = BMK_NODE_HTTP;          /* 未指定 --type 时按 HTTP */
+        const char *url = NULL;
+        char *url_buf = NULL;
+        parse_proxy_opts(argc, argv, 1, &nd, &url);
+
+        if (!nd.host || !*nd.host || nd.port <= 0 || nd.port > 65535) {
+            fprintf(stderr, "错误: 需要 --host 与合法的 --port (1-65535)\n");
+            bmk_node_free(&nd);
+            return 2;
+        }
+        if (!url || !*url)
+            url_buf = bmk_settings_get_str(app->db, BMK_SET_PROXY_TEST_URL,
+                                           "https://www.google.com/generate_204");
+        const char *use_url = (url && *url) ? url : url_buf;
+
+        bmk_proxy_check chk;
+        bmk_proxy_endpoint_check(&nd, use_url, &chk);
+        print_proxy_check(&chk);
+
+        int rc = chk.usable ? 0 : 1;
+        free(url_buf);
+        bmk_node_free(&nd);
+        return rc;
+    }
 
     if (strcmp(argv[0], "list") == 0) {
         size_t n = bmk_proxy_node_count();
@@ -616,25 +692,52 @@ static int cmd_proxy(bmk_app *app, int argc, char **argv)
     }
 
     if (strcmp(argv[0], "add") == 0) {
-        if (argc < 2) { fprintf(stderr, "错误: 缺少 vless:// 链接\n"); return 2; }
-        bmk_vless v;
-        memset(&v, 0, sizeof v);
-        if (bmk_vless_parse(argv[1], &v) != BMK_OK) {
-            fprintf(stderr, "错误: vless 链接解析失败\n");
-            return 1;
+        if (argc < 2) {
+            fprintf(stderr, "错误: 需要 vless:// 链接，或 --type/--host/--port 参数\n");
+            return 2;
         }
         bmk_node nd;
         memset(&nd, 0, sizeof nd);
-        nd.type = BMK_NODE_VLESS;
         nd.enabled = true;
-        nd.vless_uri = bmk_strdup(argv[1]);
-        nd.name = bmk_strdup(v.name && *v.name ? v.name : v.host);
         int64_t id = 0;
-        bmk_err e = bmk_proxy_node_add(&nd, &id);
+        bmk_err e;
+
+        if (strncmp(argv[1], "vless://", 8) == 0) {
+            bmk_vless v;
+            memset(&v, 0, sizeof v);
+            if (bmk_vless_parse(argv[1], &v) != BMK_OK) {
+                fprintf(stderr, "错误: vless 链接解析失败\n");
+                return 1;
+            }
+            nd.type = BMK_NODE_VLESS;
+            nd.vless_uri = bmk_strdup(argv[1]);
+            nd.name = bmk_strdup(v.name && *v.name ? v.name : v.host);
+            e = bmk_proxy_node_add(&nd, &id);
+            bmk_vless_free(&v);
+        } else {
+            nd.type = BMK_NODE_HTTP;      /* 未指定 --type 时按 HTTP */
+            const char *ignored_url = NULL;
+            parse_proxy_opts(argc, argv, 1, &nd, &ignored_url);
+            if (!nd.host || !*nd.host || nd.port <= 0 || nd.port > 65535) {
+                fprintf(stderr, "错误: 需要 --host 与合法的 --port (1-65535)\n");
+                bmk_node_free(&nd);
+                return 2;
+            }
+            if (!nd.name) {
+                char nb[256];
+                snprintf(nb, sizeof nb, "%s %s:%d",
+                         nd.type == BMK_NODE_SOCKS5 ? "SOCKS5" : "HTTP",
+                         nd.host, nd.port);
+                nd.name = bmk_strdup(nb);
+            }
+            e = bmk_proxy_node_add(&nd, &id);
+            /* HTTP/SOCKS5 无子进程，start 只是把 available 置 true */
+            if (e == BMK_OK) bmk_proxy_node_start(id);
+        }
+
         if (e == BMK_OK) { bmk_proxy_save(app->db); printf("已添加节点 #%lld\n", (long long)id); }
         else fprintf(stderr, "错误: 添加失败（%s）\n", bmk_err_str(e));
         bmk_node_free(&nd);
-        bmk_vless_free(&v);
         return e == BMK_OK ? 0 : 1;
     }
 
@@ -648,8 +751,15 @@ static int cmd_proxy(bmk_app *app, int argc, char **argv)
     }
     if (strcmp(argv[0], "stop") == 0) { bmk_proxy_node_stop(id); printf("已停止\n"); return 0; }
     if (strcmp(argv[0], "test") == 0) {
-        char *url = bmk_settings_get_str(app->db, BMK_SET_PROXY_TEST_URL,
-                                         "https://www.google.com/generate_204");
+        const char *override = NULL;
+        for (int k = 2; k < argc; k++)
+            if (strcmp(argv[k], "--url") == 0 && k + 1 < argc) {
+                override = argv[++k];
+                break;
+            }
+        char *url = override ? bmk_strdup(override)
+                             : bmk_settings_get_str(app->db, BMK_SET_PROXY_TEST_URL,
+                                                    "https://www.google.com/generate_204");
         long ms = 0;
         bmk_err e = bmk_proxy_node_test(id, url, &ms);
         free(url);

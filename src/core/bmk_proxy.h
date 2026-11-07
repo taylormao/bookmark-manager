@@ -96,6 +96,44 @@ bmk_err    bmk_proxy_node_remove(int64_t id);
 bmk_err bmk_proxy_node_start(int64_t id);
 void    bmk_proxy_node_stop(int64_t id);
 
+/* ---- 代理配置分层校验（FR-17 补充） ---- */
+
+typedef enum {
+    BMK_PCHK_SKIP = 0,   /* 该阶段未执行 */
+    BMK_PCHK_OK,
+    BMK_PCHK_FAIL,
+} bmk_proxy_stage_state;
+
+typedef enum {
+    BMK_PCHK_TCP = 0,    /* 1. TCP 连到 host:port */
+    BMK_PCHK_HANDSHAKE,  /* 2. HTTP CONNECT / SOCKS5 greeting */
+    BMK_PCHK_TARGET,     /* 3. 经代理请求测试 URL（可选） */
+    BMK_PCHK_STAGES,
+} bmk_proxy_stage;
+
+typedef struct {
+    bmk_proxy_stage_state state[BMK_PCHK_STAGES];
+    long                  ms[BMK_PCHK_STAGES];
+    char                  detail[BMK_PCHK_STAGES][128];
+    bool                  usable;  /* 只由 TCP + 握手决定：IP/端口/协议本身可用 */
+    bmk_err               err;
+} bmk_proxy_check;
+
+/*
+ * 对一份「尚未保存」的节点配置做分层校验：不读写节点池、不落库、不启动进程。
+ * 阶段 1 TCP 连通、阶段 2 按 type 做协议握手（能识别协议填错与认证失败）、
+ * 阶段 3 在 test_url 非空时经代理访问目标站。
+ *
+ * 阶段 3 的结果只记在 state[BMK_PCHK_TARGET]，不改变 usable：
+ * 目标站被墙/超时不等于代理服务器本身不可用，这样才不会把「代理是对的、
+ * 只是 google 访问不了」误报成配置错误。
+ *
+ * VLESS 依赖本地 xray 入站，需 cfg->local_port > 0（即已保存并启动），
+ * 否则返回 BMK_ERR_UNSUPPORTED。
+ */
+bmk_err bmk_proxy_endpoint_check(const bmk_node *cfg, const char *test_url,
+                                 bmk_proxy_check *out);
+
 /* 连通性测试（FR-17 第 4 条）。out_ms 为耗时毫秒。 */
 bmk_err bmk_proxy_node_test(int64_t id, const char *test_url, long *out_ms);
 

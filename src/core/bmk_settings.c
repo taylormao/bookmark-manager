@@ -11,6 +11,7 @@
 #ifdef _WIN32
 #  include <windows.h>
 #  include <shlobj.h>
+#  include <objbase.h>
 #endif
 
 /*
@@ -123,10 +124,24 @@ bmk_err bmk_settings_set_bool(bmk_db *db, const char *key, bool value)
 char *bmk_settings_default_data_dir(void)
 {
 #ifdef _WIN32
-    /* Windows：%APPDATA%\BookmarkManager（需求 3.1） */
-    char path[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, path)))
-        return bmk_path_join(path, "BookmarkManager");
+    /* Windows：%APPDATA%\BookmarkManager（需求 3.1）。
+     * 用 KNOWNFOLDERID 的 W 版 + UTF-8 转换：SHGetFolderPathA 走 ANSI 代码页，
+     * 用户名含中文等非 ASCII 字符时会乱码，MAX_PATH 对深路径还会静默截断。 */
+    PWSTR wappdata = NULL;
+    if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, NULL, &wappdata))) {
+        char *result = NULL;
+        int n = WideCharToMultiByte(CP_UTF8, 0, wappdata, -1, NULL, 0, NULL, NULL);
+        if (n > 0) {
+            char *path = (char *)malloc((size_t)n);
+            if (path &&
+                WideCharToMultiByte(CP_UTF8, 0, wappdata, -1, path, n, NULL, NULL) > 0) {
+                result = bmk_path_join(path, "BookmarkManager");
+            }
+            free(path);
+        }
+        CoTaskMemFree(wappdata);
+        if (result) return result;
+    }
     const char *appdata = getenv("APPDATA");
     if (appdata) return bmk_path_join(appdata, "BookmarkManager");
     return bmk_strdup(".\\BookmarkManager");

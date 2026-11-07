@@ -1,9 +1,9 @@
 /*
- * bmk_dialog_tasks.c - é¿ä»»å¡å¯¹è¯æ¡ï¼å¯¼å¥ãå¯¼åºãæ ¡éªãæ¥éåå¹?
- * ï¼FR-07 / FR-08 / FR-14 / FR-15 / FR-16ï¼?
+ * bmk_dialog_tasks.c - 长任务对话框：导入、导出、校验、查重合并
+ * （FR-07 / FR-08 / FR-14 / FR-15 / FR-16）
  *
- * ææèæ¶æä½å¨åå°çº¿ç¨æ§è¡ï¼è¿åº¦éè¿ g_idle_add åä¸»çº¿ç¨å·æ°ï¼?
- * æ¯ä¸ªä»»å¡é½æä¾åæ¶æé®ï¼FR-20 ç¬?7 æ¡ï¼ã?
+ * 所有耗时操作在后台线程执行，进度通过 g_idle_add 回主线程刷新；
+ * 每个任务都提供取消按钮（FR-20 第 7 条）。
  */
 #include "bmk_ui.h"
 
@@ -16,7 +16,7 @@
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
-/* éç¨è¿åº¦å¯¹è¯æ¡?                                                     */
+/* 通用进度对话框 */
 /* ------------------------------------------------------------------ */
 
 typedef struct {
@@ -24,14 +24,14 @@ typedef struct {
     GtkWidget *bar;
     GtkWidget *label;
     GtkWidget *detail;
-    gboolean   canceled;      /* ç±ä¸»çº¿ç¨åï¼åå°çº¿ç¨è¯?*/
+    gboolean   canceled;      /* 由主线程写，后台线程读 */
 } ProgressUI;
 
 static void on_progress_response(GtkDialog *d, int response, gpointer user)
 {
     (void)d; (void)response;
     ProgressUI *p = user;
-    p->canceled = TRUE;       /* åªç½®ä½ï¼å®éæ¶å°¾å¨åå°çº¿ç¨è¿åå */
+    p->canceled = TRUE;       /* 只置位；实际收尾在后台线程返回后 */
 }
 
 static ProgressUI *progress_open(GtkWindow *parent, const char *title,
@@ -79,7 +79,7 @@ static void progress_close(ProgressUI *p)
     g_free(p);
 }
 
-/* åå°çº¿ç¨ -> ä¸»çº¿ç¨çè¿åº¦æ´æ° */
+/* 后台线程 -> 主线程的进度更新 */
 typedef struct {
     ProgressUI *ui;
     gint64      done, total;
@@ -115,7 +115,7 @@ static void progress_post(ProgressUI *ui, gint64 done, gint64 total,
 }
 
 /* ================================================================== */
-/* å¯¼å¥ï¼FR-07ï¼?                                                       */
+/* 导入（FR-07） */
 /* ================================================================== */
 
 typedef struct {
@@ -131,7 +131,7 @@ static bool import_progress_cb(int64_t done, int64_t total, void *user)
 {
     ImportJob *j = user;
     progress_post(j->ui, done, total, NULL);
-    return !j->ui->canceled;   /* è¿å false è§¦åæ´ä½åæ» */
+    return !j->ui->canceled;   /* 返回 false 触发整体回滚 */
 }
 
 static void import_thread(GTask *task, gpointer src, gpointer data, GCancellable *c)
@@ -287,7 +287,7 @@ void bmk_dialog_import(BmkWindow *w)
     gtk_widget_set_margin_start(grid, 16);
     gtk_widget_set_margin_end(grid, 16);
 
-    /* æä»¶éæ© */
+    /* 文件选择 */
     GtkWidget *fbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     c->file_label = gtk_label_new("");
     gtk_widget_set_hexpand(c->file_label, TRUE);
@@ -301,21 +301,21 @@ void bmk_dialog_import(BmkWindow *w)
     gtk_grid_attach(GTK_GRID(grid), gtk_label_new(T("import.file")), 0, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), fbox, 1, 0, 1, 1);
 
-    /* ç¼ç  */
+    /* 编码 */
     const char *encs[] = { NULL, "UTF-8", "GBK", NULL };
     encs[0] = T("import.enc_auto");
     c->enc_combo = gtk_drop_down_new_from_strings(encs);
     gtk_grid_attach(GTK_GRID(grid), gtk_label_new(T("import.encoding")), 0, 1, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), c->enc_combo, 1, 1, 1, 1);
 
-    /* ç®æ åç±» */
+    /* 目标分类 */
     GtkStringList *cats = gtk_string_list_new(NULL);
     bmk_ui_fill_category_combo(w->core->db, cats, c->cat_ids, 0);
     c->cat_combo = gtk_drop_down_new(G_LIST_MODEL(cats), NULL);
     gtk_grid_attach(GTK_GRID(grid), gtk_label_new(T("import.target")), 0, 2, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), c->cat_combo, 1, 2, 1, 1);
 
-    /* éå¤ç­ç¥ */
+    /* 重复策略 */
     const char *dups[] = { NULL, NULL, NULL };
     dups[0] = T("import.dup_skip");
     dups[1] = T("import.dup_import");
@@ -329,7 +329,7 @@ void bmk_dialog_import(BmkWindow *w)
 }
 
 /* ================================================================== */
-/* å¯¼åºï¼FR-08ï¼?                                                       */
+/* 导出（FR-08） */
 /* ================================================================== */
 
 typedef struct {
@@ -348,7 +348,7 @@ static void on_export_file_chosen(GObject *src, GAsyncResult *r, gpointer user)
 
     bmk_err e;
     if (c->filtered_only) {
-        /* ä»å¯¼åºå½åç­éç»æï¼åæ¥å?id åè¡¨ */
+        /* 仅导出当前筛选结果：先查询 id 列表 */
         bmk_bookmark **list = NULL;
         size_t n = 0;
         e = bmk_bookmark_query(c->w->core->db, &c->w->filter, c->w->sort_key,
@@ -384,7 +384,12 @@ static void on_export_response(GtkDialog *d, int response, gpointer user)
 
     GtkFileDialog *fd = gtk_file_dialog_new();
     gtk_file_dialog_set_title(fd, T("export.title"));
-    gtk_file_dialog_set_initial_name(fd, "bookmarks.html");
+    /* FR-08 第 4 条：默认文件名带时间戳 */
+    GDateTime *now = g_date_time_new_now_local();
+    char *defname = g_date_time_format(now, "bookmarks_%Y%m%d_%H%M%S.html");
+    g_date_time_unref(now);
+    gtk_file_dialog_set_initial_name(fd, defname);
+    g_free(defname);
     gtk_file_dialog_save(fd, ctx->w->window, NULL, on_export_file_chosen, ctx);
     g_object_unref(fd);
 }
@@ -420,7 +425,7 @@ void bmk_dialog_export(BmkWindow *w)
 }
 
 /* ================================================================== */
-/* æ¹éæ ¡éªï¼FR-14ï¼?                                                   */
+/* 批量校验（FR-14） */
 /* ================================================================== */
 
 typedef struct {
@@ -464,7 +469,7 @@ static void check_done(GObject *src, GAsyncResult *r, gpointer user)
     progress_close(j->ui);
 
     if (j->err == BMK_ERR_CANCELED) {
-        /* å·²å®æçç»æç§å¸¸å¥åºï¼FR-14 ç¬?6 æ¡ï¼ */
+        /* 已完成的结果照常入库（FR-14 第 6 条） */
         bmk_toast(w, "%s", T("msg.canceled"));
     } else if (j->err != BMK_OK) {
         bmk_error_dialog(w->window, "%s (%s)", T("msg.error"), bmk_err_str(j->err));
@@ -503,7 +508,7 @@ static void start_check(BmkWindow *w, int64_t *ids, size_t n)
     g_object_unref(task);
 }
 
-/* åå½åç­éç»æç id åè¡¨ */
+/* 取当前筛选结果的 id 列表 */
 static size_t ids_from_filter(BmkWindow *w, int64_t **out)
 {
     bmk_bookmark **list = NULL;
@@ -624,13 +629,13 @@ void bmk_dialog_check(BmkWindow *w, gint64 *ids, gsize n)
 }
 
 /* ================================================================== */
-/* æ¥éä¸åå¹¶ï¼FR-15 / FR-16ï¼?                                         */
+/* 查重与合并（FR-15 / FR-16） */
 /* ================================================================== */
 
 typedef struct {
     BmkWindow      *w;
     GtkWidget      *dialog;
-    GtkWidget      *box;         /* ç»åè¡¨å®¹å?*/
+    GtkWidget      *box;         /* 组列表容器 */
     bmk_dup_group **groups;
     size_t          n;
 } DedupeCtx;
@@ -678,7 +683,7 @@ static void on_merge_clicked(GtkButton *b, gpointer user)
 
 static void dedupe_reload(DedupeCtx *c)
 {
-    /* æ¸ç©ºæ§åå®?*/
+    /* 清空旧内容 */
     GtkWidget *child;
     while ((child = gtk_widget_get_first_child(c->box)))
         gtk_box_remove(GTK_BOX(c->box), child);
@@ -738,7 +743,7 @@ static void dedupe_reload(DedupeCtx *c)
 
         for (size_t k = 0; k < g->count; k++) {
             bmk_bookmark *b = g->members[k];
-            char *line = g_strdup_printf("#%lld  %s  â? %s",
+            char *line = g_strdup_printf("#%lld  %s  -> %s",
                                          (long long)b->id,
                                          b->title ? b->title : T("app.untitled"),
                                          b->url ? b->url : "");

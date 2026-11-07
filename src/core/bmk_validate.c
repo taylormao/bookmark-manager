@@ -22,6 +22,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <curl/curl.h>
 
@@ -90,7 +91,17 @@ void bmk_validate_opts_load(bmk_db *db, bmk_validate_opts *o)
     if (o->concurrency < 1)  o->concurrency = 1;
     if (o->concurrency > 10) o->concurrency = 10;
 
-    char *mode = bmk_settings_get_str(db, BMK_SET_PROXY_MODE, "direct");
+    /*
+     * 兼容旧设置：早期设置界面只写 check_use_proxy 布尔键，而这里读 proxy_mode，
+     * 导致勾选「校验时使用代理」对批量校验完全无效。仅当 proxy_mode 缺失时回退，
+     * 避免覆盖用户新设的 direct/always/auto 三态。
+     */
+    char *mode = bmk_settings_get_str(db, BMK_SET_PROXY_MODE, NULL);
+    if (!mode || !*mode) {
+        free(mode);
+        mode = bmk_settings_get_bool(db, BMK_SET_CHK_USE_PROXY, false)
+             ? bmk_strdup("always") : NULL;
+    }
     if (mode) {
         if      (strcmp(mode, "always") == 0) o->proxy_mode = BMK_PROXY_ALWAYS;
         else if (strcmp(mode, "auto") == 0)   o->proxy_mode = BMK_PROXY_AUTO;
@@ -345,6 +356,13 @@ static void host_release(pool_state *ps, int slot_idx)
 /* worker 线程 */
 static void worker_thread(pool_state *ps)
 {
+    /* jitter 依赖 rand()：Windows UCRT 的 rand 种子是线程本地且默认为 1，
+     * 不播种会让所有 worker 产生完全相同的抖动序列，jitter 失去打散作用 */
+#ifdef _WIN32
+    srand((unsigned)(time(NULL) ^ GetCurrentThreadId()));
+#else
+    srand((unsigned)(time(NULL) ^ (uintptr_t)pthread_self()));
+#endif
     for (;;) {
         MTX_LOCK(&ps->q_lock);
         while (ps->q_count == 0 && !ps->canceled)

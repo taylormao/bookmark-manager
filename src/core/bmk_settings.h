@@ -38,6 +38,9 @@ typedef struct bmk_db bmk_db;
 #define BMK_SET_PROXY_TEST_URL   "proxy_test_url"
 #define BMK_SET_XRAY_PATH        "xray_path"
 
+/* 外观（FR-01：界面语言之外的第二项个性化设置） */
+#define BMK_SET_THEME            "theme"                /* "light" | "dark"，默认浅色 */
+
 /* 同步（FR-18 / FR-19） */
 #define BMK_SET_GH_REPO          "github_repo"
 #define BMK_SET_GH_BRANCH        "github_branch"

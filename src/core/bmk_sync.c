@@ -322,6 +322,9 @@ bmk_err bmk_sync_github_push(bmk_db *db, const bmk_github_cfg *cfg,
             if (bmk_backup_write_raw("remote", "html", out, strlen(out), &path) == BMK_OK) {
                 emit(log, user, "remote version saved to %s", path);
                 free(path);
+            } else {
+                /* FR-22 第 3 条：不得静默失败 —— 远端旧版备份写不出来必须告警 */
+                BMK_WARN("divergence backup failed; remote old version NOT saved");
             }
         }
         free(out);
@@ -569,15 +572,18 @@ static char *s3_object_url(const bmk_s3_cfg *cfg, const char *key)
     return bmk_buf_steal(&b);
 }
 
-/* 统一设置 SigV4 认证（附录 D） */
-static void s3_auth(CURL *c, const bmk_s3_cfg *cfg, char *sigv4_buf, size_t bufsz,
+/* 统一设置 SigV4 认证（附录 D）。缓冲区不足时返回 false：
+ * 截断的签名串/密钥会导致与配置无关的认证失败，必须放弃请求而不是静默继续。 */
+static bool s3_auth(CURL *c, const bmk_s3_cfg *cfg, char *sigv4_buf, size_t bufsz,
                     char *userpwd_buf, size_t pwdsz)
 {
     const char *region = (cfg->region && *cfg->region) ? cfg->region : "us-east-1";
-    snprintf(sigv4_buf, bufsz, "aws:amz:%s:s3", region);
-    snprintf(userpwd_buf, pwdsz, "%s:%s",
-             cfg->access_key ? cfg->access_key : "",
-             cfg->secret_key ? cfg->secret_key : "");
+    int n1 = snprintf(sigv4_buf, bufsz, "aws:amz:%s:s3", region);
+    int n2 = snprintf(userpwd_buf, pwdsz, "%s:%s",
+                      cfg->access_key ? cfg->access_key : "",
+                      cfg->secret_key ? cfg->secret_key : "");
+    if (n1 < 0 || (size_t)n1 >= bufsz || n2 < 0 || (size_t)n2 >= pwdsz)
+        return false;
     curl_easy_setopt(c, CURLOPT_HTTPAUTH, (long)CURLAUTH_AWS_SIGV4);
     curl_easy_setopt(c, CURLOPT_AWS_SIGV4, sigv4_buf);
     curl_easy_setopt(c, CURLOPT_USERPWD, userpwd_buf);
@@ -592,7 +598,10 @@ static bmk_err s3_head(const bmk_s3_cfg *cfg, const char *url, long *out_status)
     if (!c) return BMK_ERR_NOMEM;
     bmk_curl_set_default_cainfo(c);
     char sig[128], pwd[512];
-    s3_auth(c, cfg, sig, sizeof(sig), pwd, sizeof(pwd));
+    if (!s3_auth(c, cfg, sig, sizeof(sig), pwd, sizeof(pwd))) {
+        curl_easy_cleanup(c);
+        return BMK_ERR_INVALID_ARG;
+    }
     curl_easy_setopt(c, CURLOPT_URL, url);
     curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
 
@@ -613,7 +622,10 @@ static bmk_err s3_get(const bmk_s3_cfg *cfg, const char *url,
     if (!c) return BMK_ERR_NOMEM;
     bmk_curl_set_default_cainfo(c);
     char sig[128], pwd[512];
-    s3_auth(c, cfg, sig, sizeof(sig), pwd, sizeof(pwd));
+    if (!s3_auth(c, cfg, sig, sizeof(sig), pwd, sizeof(pwd))) {
+        curl_easy_cleanup(c);
+        return BMK_ERR_INVALID_ARG;
+    }
 
     s3_sink sink;
     bmk_buf_init(&sink.buf);
@@ -629,6 +641,15 @@ static bmk_err s3_get(const bmk_s3_cfg *cfg, const char *url,
 
     if (out_status) *out_status = status;
     if (rc != CURLE_OK) { bmk_buf_free(&sink.buf); return BMK_ERR_NETWORK; }
+    /* 旧实现只看 CURLE_OK，403/500 的错误页会被当成远端书签版本备份下来 */
+    if (status == 401 || status == 403) {
+        bmk_buf_free(&sink.buf);
+        return BMK_ERR_AUTH;
+    }
+    if (status < 200 || status >= 300) {
+        bmk_buf_free(&sink.buf);
+        return BMK_ERR_NETWORK;
+    }
     if (out_len) *out_len = sink.buf.len;
     *out = bmk_buf_steal(&sink.buf);
     return BMK_OK;
@@ -641,7 +662,10 @@ static bmk_err s3_put(const bmk_s3_cfg *cfg, const char *url,
     if (!c) return BMK_ERR_NOMEM;
     bmk_curl_set_default_cainfo(c);
     char sig[128], pwd[512];
-    s3_auth(c, cfg, sig, sizeof(sig), pwd, sizeof(pwd));
+    if (!s3_auth(c, cfg, sig, sizeof(sig), pwd, sizeof(pwd))) {
+        curl_easy_cleanup(c);
+        return BMK_ERR_INVALID_ARG;
+    }
 
     s3_source src = { data, len, 0 };
     curl_easy_setopt(c, CURLOPT_URL, url);
@@ -677,7 +701,7 @@ bmk_err bmk_sync_s3_push(bmk_db *db, const bmk_s3_cfg *cfg,
         free(url);
         return BMK_ERR_NETWORK;
     }
-    if (status == 403) {
+    if (status == 401 || status == 403) {
         emit(log, user, "credentials rejected by the server");
         free(url);
         return BMK_ERR_AUTH;

@@ -67,6 +67,14 @@ static void on_activate(GtkApplication *app, gpointer user)
     bmk_i18n_init(lang);
     free(lang);
 
+    /* FR-01：按设置应用浅色/深色主题（默认浅色）。 */
+    char *theme = bmk_settings_get_str(core->db, BMK_SET_THEME, "light");
+    g_object_set(gtk_settings_get_default(),
+                 "gtk-application-prefer-dark-theme",
+                 (gboolean)(theme && strcmp(theme, "dark") == 0),
+                 NULL);
+    free(theme);
+
     BmkWindow *win = bmk_window_new(app, core);
 
     /* 应用退出时释放核心资源（代理子进程、数据库、日志）。 */

@@ -9,6 +9,8 @@ set(BMK_TEST_TARGETS
   test_sync
   test_validate
   test_backup
+  test_proxy_http
+  test_perf
 )
 
 foreach(t IN LISTS BMK_TEST_TARGETS)
@@ -17,9 +19,12 @@ foreach(t IN LISTS BMK_TEST_TARGETS)
   target_include_directories(${t} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   add_test(NAME ${t} COMMAND ${t})
   # 各用例在自己的工作目录里建临时库文件，避免相互干扰
+  # SKIP_RETURN_CODE 与 test_util.h 的 test_report 约定一致：全部用例都被
+  # 跳过时返回 77，CTest 记为 Skipped 而非 Pass，避免零断言也算通过。
   set_tests_properties(${t} PROPERTIES
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    TIMEOUT 120)
+    TIMEOUT 120
+    SKIP_RETURN_CODE 77)
 endforeach()
 
 # Windows：测试可执行文件动态链接 mingw64/bin 下的 libcurl-4.dll /

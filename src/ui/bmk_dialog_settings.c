@@ -94,6 +94,7 @@ typedef struct {
     /* 常规 */
     GtkWidget *data_dir_label;
     GtkWidget *lang_combo;
+    GtkWidget *theme_combo;
     char      *new_data_dir;
 
     /* 网络 */
@@ -102,7 +103,17 @@ typedef struct {
     GtkWidget *concurrency;
     GtkWidget *retry;
     GtkWidget *interval;
-    GtkWidget *use_proxy;
+    GtkWidget *proxy_mode;     /* direct / always / auto，真正作用于批量校验 */
+
+    /* 直接填写的代理配置（FR-17 补充：协议 / 地址 / 端口 / 凭据 + 即时校验） */
+    GtkWidget *proxy_type;
+    GtkWidget *proxy_host;
+    GtkWidget *proxy_port;
+    GtkWidget *proxy_user;
+    GtkWidget *proxy_pass;
+    GtkWidget *proxy_test_url;
+    GtkWidget *proxy_result;
+
     GtkWidget *xray_path;
     GtkWidget *git_path;
 } SettingsCtx;
@@ -112,6 +123,140 @@ static void settings_ctx_free(SettingsCtx *c)
     if (!c) return;
     g_free(c->new_data_dir);
     g_free(c);
+}
+
+/* ================================================================== */
+/* 直接填写代理配置 + 即时分层校验（FR-17 补充）                       */
+/* ================================================================== */
+
+typedef struct {
+    BmkWindow *w;
+    GtkWidget *result;   /* 额外持有一个 ref，防止对话框先于后台任务销毁 */
+    bmk_node   cfg;
+    char      *test_url;
+    bmk_proxy_check chk;
+    bmk_err   err;
+} ProxyCfgJob;
+
+static void collect_proxy_cfg(SettingsCtx *c, bmk_node *n, char **test_url)
+{
+    memset(n, 0, sizeof(*n));
+    n->type = (gtk_drop_down_get_selected(GTK_DROP_DOWN(c->proxy_type)) == 1)
+            ? BMK_NODE_SOCKS5 : BMK_NODE_HTTP;
+    n->enabled = true;
+    n->host = g_strdup(gtk_editable_get_text(GTK_EDITABLE(c->proxy_host)));
+    n->port = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(c->proxy_port));
+
+    const char *u = gtk_editable_get_text(GTK_EDITABLE(c->proxy_user));
+    const char *p = gtk_editable_get_text(GTK_EDITABLE(c->proxy_pass));
+    if (u && *u) n->username = g_strdup(u);
+    if (p && *p) n->password = g_strdup(p);
+
+    const char *t = gtk_editable_get_text(GTK_EDITABLE(c->proxy_test_url));
+    *test_url = (t && *t) ? g_strdup(t) : NULL;
+}
+
+static void proxy_cfg_node_free(bmk_node *n)
+{
+    g_free(n->name);
+    g_free(n->host);
+    g_free(n->username);
+    g_free(n->password);
+    memset(n, 0, sizeof(*n));
+}
+
+static void proxy_cfg_job_free(gpointer data)
+{
+    ProxyCfgJob *j = data;
+    if (!j) return;
+    proxy_cfg_node_free(&j->cfg);
+    g_free(j->test_url);
+    if (j->result) g_object_unref(j->result);
+    g_free(j);
+}
+
+static void proxy_cfg_test_done(GObject *src, GAsyncResult *r, gpointer user)
+{
+    (void)src; (void)user;
+    ProxyCfgJob *j = g_task_get_task_data(G_TASK(r));
+    static const char *kStage[] = { "TCP", "Handshake", "Target" };
+
+    GString *s = g_string_new(NULL);
+    for (int i = 0; i < BMK_PCHK_STAGES; i++) {
+        const char *st = (j->chk.state[i] == BMK_PCHK_OK)   ? "OK"
+                       : (j->chk.state[i] == BMK_PCHK_FAIL) ? "FAIL" : "SKIP";
+        g_string_append_printf(s, "%-9s %-4s %4ldms  %s\n",
+                               kStage[i], st, j->chk.ms[i], j->chk.detail[i]);
+    }
+    g_string_append_printf(s, "%s: %s", T("set.proxy_result"),
+                           j->chk.usable ? T("set.proxy_usable")
+                                         : T("set.proxy_unusable"));
+    if (j->chk.usable && j->chk.state[BMK_PCHK_TARGET] == BMK_PCHK_FAIL)
+        g_string_append_printf(s, " (%s)", T("set.proxy_target_only"));
+
+    if (j->result && GTK_IS_LABEL(j->result))
+        gtk_label_set_text(GTK_LABEL(j->result), s->str);
+    g_string_free(s, TRUE);
+    if (j->result) { g_object_unref(j->result); j->result = NULL; }
+}
+
+static void proxy_cfg_test_thread(GTask *task, gpointer src, gpointer data,
+                                  GCancellable *cc)
+{
+    (void)src; (void)cc;
+    ProxyCfgJob *j = data;
+    j->err = bmk_proxy_endpoint_check(&j->cfg, j->test_url, &j->chk);
+    g_task_return_boolean(task, TRUE);
+}
+
+static void on_proxy_cfg_test(GtkButton *b, gpointer user)
+{
+    (void)b;
+    SettingsCtx *c = user;
+    ProxyCfgJob *j = g_new0(ProxyCfgJob, 1);
+    j->w = c->w;
+    j->result = c->proxy_result;
+    if (j->result) g_object_ref(j->result);
+    collect_proxy_cfg(c, &j->cfg, &j->test_url);
+
+    if (j->result)
+        gtk_label_set_text(GTK_LABEL(j->result), T("set.proxy_testing"));
+
+    GTask *task = g_task_new(NULL, NULL, proxy_cfg_test_done, NULL);
+    g_task_set_task_data(task, j, proxy_cfg_job_free);
+    g_task_run_in_thread(task, proxy_cfg_test_thread);
+    g_object_unref(task);
+}
+
+static void on_proxy_cfg_save(GtkButton *b, gpointer user)
+{
+    (void)b;
+    SettingsCtx *c = user;
+    bmk_node n;
+    char *test_url = NULL;
+    collect_proxy_cfg(c, &n, &test_url);
+    g_free(test_url);
+
+    if (!n.host || !*n.host || n.port <= 0 || n.port > 65535) {
+        bmk_error_dialog(c->w->window, "%s", T("set.proxy_invalid"));
+        proxy_cfg_node_free(&n);
+        return;
+    }
+    n.name = g_strdup_printf("%s %s:%d",
+        n.type == BMK_NODE_SOCKS5 ? "SOCKS5" : "HTTP", n.host, n.port);
+
+    int64_t id = 0;
+    bmk_err e = bmk_proxy_node_add(&n, &id);
+    if (e == BMK_OK) {
+        bmk_proxy_node_start(id);  /* HTTP/SOCKS5 无子进程，直接置为可用 */
+        bmk_proxy_save(c->w->core->db);
+        bmk_settings_set_str(c->w->core->db, BMK_SET_PROXY_MODE, "always");
+        bmk_toast(c->w, "%s", T("set.proxy_saved"));
+    } else {
+        bmk_error_dialog(c->w->window, "%s (%s)",
+                         T("set.proxy_save_failed"), bmk_err_str(e));
+    }
+    proxy_cfg_node_free(&n);
 }
 
 static void on_data_dir_chosen(GObject *src, GAsyncResult *r, gpointer user)
@@ -188,6 +333,8 @@ static void on_settings_response(GtkDialog *d, int response, gpointer user)
     /* 常规 */
     bmk_settings_set_str(db, BMK_SET_LANGUAGE,
         gtk_drop_down_get_selected(GTK_DROP_DOWN(c->lang_combo)) == 1 ? "en" : "zh");
+    bmk_settings_set_str(db, BMK_SET_THEME,
+        gtk_drop_down_get_selected(GTK_DROP_DOWN(c->theme_combo)) == 1 ? "dark" : "light");
 
     /* 网络 */
     bmk_settings_set_bool(db, BMK_SET_ICON_SERVICE,
@@ -200,8 +347,14 @@ static void on_settings_response(GtkDialog *d, int response, gpointer user)
         (int64_t)gtk_spin_button_get_value(GTK_SPIN_BUTTON(c->retry)));
     bmk_settings_set_int(db, BMK_SET_CHK_INTERVAL_MS,
         (int64_t)gtk_spin_button_get_value(GTK_SPIN_BUTTON(c->interval)));
-    bmk_settings_set_bool(db, BMK_SET_CHK_USE_PROXY,
-        gtk_check_button_get_active(GTK_CHECK_BUTTON(c->use_proxy)));
+    /* 写入批量校验真正读取的 proxy_mode，而不是旧的 check_use_proxy 布尔键 */
+    static const char *kProxyModes[] = { "direct", "always", "auto" };
+    guint mi = gtk_drop_down_get_selected(GTK_DROP_DOWN(c->proxy_mode));
+    if (mi > 2) mi = 0;
+    bmk_settings_set_str(db, BMK_SET_PROXY_MODE, kProxyModes[mi]);
+
+    const char *tu = gtk_editable_get_text(GTK_EDITABLE(c->proxy_test_url));
+    if (tu && *tu) bmk_settings_set_str(db, BMK_SET_PROXY_TEST_URL, tu);
 
     const char *xp = gtk_editable_get_text(GTK_EDITABLE(c->xray_path));
     bmk_settings_set_str(db, BMK_SET_XRAY_PATH, xp ? xp : "");
@@ -265,6 +418,19 @@ void bmk_dialog_settings(BmkWindow *w)
                                    (cur && strcmp(cur, "en") == 0) ? 1 : 0);
         free(cur);
     }
+    /* 主题（FR-01）：浅色/深色，默认浅色 */
+    const char *themes[] = { NULL, NULL, NULL };
+    themes[0] = T("set.theme_light");
+    themes[1] = T("set.theme_dark");
+    c->theme_combo = row_widget(g1, r++, T("set.theme"),
+                                gtk_drop_down_new_from_strings(themes));
+    {
+        char *th = bmk_settings_get_str(db, BMK_SET_THEME, "light");
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(c->theme_combo),
+                                   (th && strcmp(th, "dark") == 0) ? 1 : 0);
+        free(th);
+    }
+
     GtkWidget *hint = gtk_label_new(T("set.restart_hint"));
     gtk_widget_add_css_class(hint, "dim-label");
     gtk_widget_set_halign(hint, GTK_ALIGN_START);
@@ -296,10 +462,62 @@ void bmk_dialog_settings(BmkWindow *w)
     c->interval    = row_spin(g2, r++, T("set.interval"), 0, 10000,
                               (double)bmk_settings_get_int(db, BMK_SET_CHK_INTERVAL_MS, 500));
 
-    c->use_proxy = gtk_check_button_new_with_label(T("set.use_proxy"));
-    gtk_check_button_set_active(GTK_CHECK_BUTTON(c->use_proxy),
-                                bmk_settings_get_bool(db, BMK_SET_CHK_USE_PROXY, false));
-    gtk_grid_attach(GTK_GRID(g2), c->use_proxy, 1, r++, 1, 1);
+    const char *modes[] = { NULL, NULL, NULL, NULL };
+    modes[0] = T("set.proxy_direct");
+    modes[1] = T("set.proxy_always");
+    modes[2] = T("set.proxy_auto");
+    c->proxy_mode = row_widget(g2, r++, T("set.use_proxy"),
+                               gtk_drop_down_new_from_strings(modes));
+    {
+        char *pm = bmk_settings_get_str(db, BMK_SET_PROXY_MODE, NULL);
+        guint sel = 0;
+        if (pm && strcmp(pm, "always") == 0) sel = 1;
+        else if (pm && strcmp(pm, "auto") == 0) sel = 2;
+        else if (!pm && bmk_settings_get_bool(db, BMK_SET_CHK_USE_PROXY, false)) sel = 1;
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(c->proxy_mode), sel);
+        free(pm);
+    }
+
+    /* ---- 直接填协议 / IP / 端口并当场校验（FR-17 补充） ---- */
+    GtkWidget *psep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_set_margin_top(psep, 8);
+    gtk_widget_set_margin_bottom(psep, 8);
+    gtk_grid_attach(GTK_GRID(g2), psep, 0, r++, 2, 1);
+
+    GtkWidget *ptitle = gtk_label_new(T("set.proxy_section"));
+    gtk_widget_set_halign(ptitle, GTK_ALIGN_START);
+    gtk_grid_attach(GTK_GRID(g2), ptitle, 0, r++, 2, 1);
+
+    const char *ptypes[] = { "HTTP", "SOCKS5", NULL };
+    c->proxy_type = row_widget(g2, r++, T("set.proxy_type"),
+                               gtk_drop_down_new_from_strings(ptypes));
+    c->proxy_host = row_entry(g2, r++, T("set.proxy_host"), "");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(c->proxy_host), "127.0.0.1");
+    c->proxy_port = row_spin(g2, r++, T("set.proxy_port"), 1, 65535, 8080);
+    c->proxy_user = row_entry(g2, r++, T("set.proxy_user"), "");
+    c->proxy_pass = row_secret(g2, r++, T("set.proxy_pass"), FALSE);
+    {
+        char *tu = bmk_settings_get_str(db, BMK_SET_PROXY_TEST_URL,
+                                        "https://www.google.com/generate_204");
+        c->proxy_test_url = row_entry(g2, r++, T("set.proxy_test_url"), tu);
+        free(tu);
+    }
+
+    GtkWidget *pbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *tbtn = gtk_button_new_with_label(T("set.proxy_test"));
+    g_signal_connect(tbtn, "clicked", G_CALLBACK(on_proxy_cfg_test), c);
+    GtkWidget *sbtn = gtk_button_new_with_label(T("set.proxy_save"));
+    g_signal_connect(sbtn, "clicked", G_CALLBACK(on_proxy_cfg_save), c);
+    gtk_box_append(GTK_BOX(pbox), tbtn);
+    gtk_box_append(GTK_BOX(pbox), sbtn);
+    gtk_grid_attach(GTK_GRID(g2), pbox, 1, r++, 1, 1);
+
+    c->proxy_result = gtk_label_new(T("set.proxy_hint"));
+    gtk_label_set_wrap(GTK_LABEL(c->proxy_result), TRUE);
+    gtk_label_set_selectable(GTK_LABEL(c->proxy_result), TRUE);
+    gtk_widget_set_halign(c->proxy_result, GTK_ALIGN_START);
+    gtk_widget_add_css_class(c->proxy_result, "dim-label");
+    gtk_grid_attach(GTK_GRID(g2), c->proxy_result, 1, r++, 1, 1);
 
     {
         char *xp = bmk_settings_get_str(db, BMK_SET_XRAY_PATH, "");

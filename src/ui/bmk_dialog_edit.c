@@ -31,11 +31,18 @@ typedef struct {
     unsigned char *icon;
     size_t         icon_len;
     char          *icon_mime;
+
+    /* FR-02 第 3 条：自动抓取的防抖 source id（0 = 未安排） */
+    guint fetch_debounce_id;
 } EditCtx;
 
 static void edit_ctx_free(EditCtx *c)
 {
     if (!c) return;
+    if (c->fetch_debounce_id) {
+        g_source_remove(c->fetch_debounce_id);
+        c->fetch_debounce_id = 0;
+    }
     if (c->cat_ids) g_array_free(c->cat_ids, TRUE);
     free(c->icon);
     free(c->icon_mime);
@@ -48,6 +55,7 @@ typedef struct {
     char             *url;
     bmk_fetch_result  res;
     bmk_err           err;
+    bool              use_icon_service;  /* FR-03 第 3c 条（主线程读取，线程内使用） */
 } FetchJob;
 
 static void fetch_job_free(gpointer p)
@@ -65,8 +73,22 @@ static void fetch_thread(GTask *task, gpointer src, gpointer data, GCancellable 
 
     bmk_fetch_opts o;
     bmk_fetch_opts_init(&o);
+    o.use_icon_service = j->use_icon_service;
     j->err = bmk_fetch_page(j->url, &o, &j->res);
     g_task_return_boolean(task, TRUE);
+}
+
+/* FR-03 第 7 条：301/308 且最终 URL 不同 → 询问是否改用最终网址 */
+static void on_final_url_response(GtkDialog *q, int response, gpointer user)
+{
+    (void)user;
+    EditCtx    *c   = g_object_get_data(G_OBJECT(q), "bmk-edit-ctx");
+    const char *furl = g_object_get_data(G_OBJECT(q), "bmk-final-url");
+    if (response == GTK_RESPONSE_YES && c && furl && *furl) {
+        /* set_text 会触发 changed，查重与自动抓取随之更新 */
+        gtk_editable_set_text(GTK_EDITABLE(c->url_entry), furl);
+    }
+    gtk_window_destroy(GTK_WINDOW(q));
 }
 
 static void fetch_done(GObject *src, GAsyncResult *r, gpointer user)
@@ -82,6 +104,18 @@ static void fetch_done(GObject *src, GAsyncResult *r, gpointer user)
         /* FR-03 第 5 条：抓取失败不阻断保存 */
         gtk_label_set_text(GTK_LABEL(c->hint), T("edit.fetch_failed"));
         return;
+    }
+
+    if (j->res.permanent_redirect && j->res.final_url && *j->res.final_url) {
+        GtkWidget *q = gtk_message_dialog_new(
+            c->dlg, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
+            "%s\n%s", T("edit.final_url_ask"), j->res.final_url);
+        gtk_window_set_title(GTK_WINDOW(q), T("edit.final_url_title"));
+        g_object_set_data_full(G_OBJECT(q), "bmk-final-url",
+                               g_strdup(j->res.final_url), g_free);
+        g_object_set_data(G_OBJECT(q), "bmk-edit-ctx", c);
+        g_signal_connect(q, "response", G_CALLBACK(on_final_url_response), NULL);
+        gtk_widget_set_visible(q, TRUE);
     }
 
     const char *cur = gtk_editable_get_text(GTK_EDITABLE(c->title_entry));
@@ -116,6 +150,9 @@ static void start_fetch(EditCtx *c)
 
     FetchJob *j = g_new0(FetchJob, 1);
     j->url = g_strdup(url);
+    /* FR-03 第 3c 条：读取设置里的外部图标服务开关（旧 GUI 路径未读取） */
+    j->use_icon_service =
+        bmk_settings_get_bool(c->w->core->db, BMK_SET_ICON_SERVICE, true);
 
     GTask *task = g_task_new(NULL, NULL, fetch_done, c);
     g_task_set_task_data(task, j, fetch_job_free);
@@ -129,10 +166,23 @@ static void on_fetch_clicked(GtkButton *b, gpointer user)
     start_fetch(user);
 }
 
-/* URL 失焦时自动查重提示（FR-02 第 4 条） */
+/* FR-02 第 3 条：输入 URL 后自动抓取（防抖 500ms，仅新增模式） */
+static gboolean auto_fetch_cb(gpointer user)
+{
+    EditCtx *c = user;
+    c->fetch_debounce_id = 0;
+    start_fetch(c);
+    return G_SOURCE_REMOVE;
+}
+
+/* URL 变化时查重提示（FR-02 第 4 条）并安排自动抓取 */
 static void on_url_changed(GtkEditable *e, gpointer user)
 {
     EditCtx *c = user;
+    if (c->fetch_debounce_id) {
+        g_source_remove(c->fetch_debounce_id);
+        c->fetch_debounce_id = 0;
+    }
     const char *url = gtk_editable_get_text(e);
     if (!url || !*url) { gtk_label_set_text(GTK_LABEL(c->hint), ""); return; }
 
@@ -155,6 +205,10 @@ static void on_url_changed(GtkEditable *e, gpointer user)
         gtk_label_set_text(GTK_LABEL(c->hint), "");
     }
     free(dup_title);
+
+    /* FR-02 第 3 条：新增模式下 URL 合法，防抖后自动抓取标题与图标 */
+    if (c->id <= 0 && bmk_url_is_valid_input(url, NULL))
+        c->fetch_debounce_id = g_timeout_add(500, auto_fetch_cb, c);
 }
 
 static void set_tags_from_entry(bmk_db *db, gint64 id, const char *text)
@@ -213,7 +267,11 @@ static void on_edit_response(GtkDialog *d, int response, gpointer user)
             return;
         }
         free(b->url);   b->url   = bmk_strdup(url);
-        free(b->title); b->title = bmk_strdup(title && *title ? title : url);
+        /* FR-02 第 5 条：标题兜底用 host 而非完整 URL */
+        char *ehost = bmk_url_host(url);
+        free(b->title); b->title = bmk_strdup(title && *title ? title
+                                                : (ehost && *ehost ? ehost : url));
+        free(ehost);
         b->category_id = cat;
         /* URL 改动需重算 url_key（FR-05 第 3 条） */
         free(b->url_key); b->url_key = NULL;
@@ -235,7 +293,11 @@ static void on_edit_response(GtkDialog *d, int response, gpointer user)
         bmk_bookmark b;
         memset(&b, 0, sizeof b);
         b.url   = bmk_strdup(url);
-        b.title = bmk_strdup(title && *title ? title : url);
+        /* FR-02 第 5 条：标题兜底用 host 而非完整 URL */
+        char *nhost = bmk_url_host(url);
+        b.title = bmk_strdup(title && *title ? title
+                                             : (nhost && *nhost ? nhost : url));
+        free(nhost);
         b.category_id = cat;
         b.valid = BMK_VALID_UNKNOWN;
         b.status_code = -1;

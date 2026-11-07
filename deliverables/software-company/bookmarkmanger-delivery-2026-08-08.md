@@ -78,4 +78,47 @@
 
 ---
 
-*文档结束。修复后测试基线：编译 0 错误、ctest 7/7、test_sync 38 断言、test_vless 71 断言。*
+## 五、2026-11-07 更新（构建恢复 + 需求补齐 + 代理功能）
+
+**构建环境**：MSYS2 MinGW 开发包链丢失的问题已通过代码级方案绕开——SQLite3/libcurl/GTK4
+在无 `.pc` 文件时走 `find_path`/`find_library` 回退（支持 `-D<DEP>_ROOT`），cJSON v1.7.19
+vendored 进 `third_party/cJSON/`，运行时 DLL 自动拷贝已兼容 scoop 命名（`libcurl-x64.dll`）。
+**完整 `cmake --build` + `ctest` 已恢复并可复现**（命令见 README 构建章节），全程不改动 scoop 环境。
+
+**测试规模**：8 → 11 个 CTest 目标，当前 10/11 通过；唯一失败的 `gui-selftest` 是
+GTK 4.18 运行时 gstreamer 依赖链的环境待办（退出码 0xc0000139），非代码问题。
+
+**遗留事项闭环状态**：
+
+| 遗留项 | 状态 |
+|---|---|
+| 发布包为旧代码编译 | ✅ 本次重建（见下） |
+| popen 命令行转义 | ✅ 已修（先校验后引用，拒绝命令元字符） |
+| 代理串凭据未 URL 编码 | ✅ 已修（`curl_easy_escape` + `CURLOPT_PROXYUSERPWD`） |
+| FR-04 默认图标 1×1 | ✅ 已修（64×64 `data/default_icon.png` + 内嵌数组同步） |
+| 备份保留策略按时间戳归组 | ✅ 此前已修 |
+| PAT 持久化进 .git/config | ⬜ 未动（推送后重置 remote 的方案已实现，彻底改 credential helper 待排期） |
+
+**新增功能（FR-17 补充条款，需求文档已同步）**：
+
+- 设置页可直接填协议（HTTP/SOCKS5）/地址/端口/凭据并当场分层校验
+  （TCP → 协议握手 → 可选目标站，407/403/429 不再误判为可用）；
+- 「保存并启用」写入节点并把批量校验代理模式置为「全部走代理」，
+  修复了旧设置键 `check_use_proxy` 对批量校验完全无效的断链；
+- CLI 新增 `proxy add --type`、`proxy check`、`proxy test --url`。
+
+**GUI 强制项补齐**：主题切换（FR-01）、图标服务开关在 GUI 抓取路径生效（FR-03）、
+301/308「是否使用最终网址」（FR-03）、输入 URL 自动抓取 + 标题 host 兜底（FR-02）、
+导出默认名带时间戳（FR-08）。**UI 代码已过完整编译**（`bmk-gui.exe` 构建成功）。
+
+**§7.2 集成测试补齐**：5xx 最终码、两跳重定向链、真实 TLS 失败、git 分叉备份 +
+force-with-lease（`tests/test_validate.c` / `tests/test_sync.c`）；
+§5.1 性能基准自动化（`tests/test_perf.c`，10k 条排序筛选 < 200ms、导入 < 10s 均达标）。
+
+**仍待外部资源**：MinIO 实例与 GitHub 测试仓库的 P3 真实推拉记录；
+gui-selftest 运行环境；64 条 UI 手工清单执行（清单文档已标注自动化基线与覆盖重叠项）。
+
+---
+
+*文档结束。当前测试基线：ctest 10/11（gui-selftest 环境待办），新增 test_proxy_http（60 断言）、
+test_perf（10k 基准）、test_sync 分叉用例（60+ 断言）、test_validate 校验矩阵（12 场景 + TLS）。*

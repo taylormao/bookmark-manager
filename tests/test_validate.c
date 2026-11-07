@@ -82,6 +82,10 @@ static void http_server_loop(http_srv *s)
                 status = (strcmp(method, "HEAD") == 0) ? "403 Forbidden" : "200 OK";
             } else if (strcmp(path, "/head500") == 0) {
                 status = (strcmp(method, "HEAD") == 0) ? "500 Internal Server Error" : "200 OK";
+            } else if (strcmp(path, "/err500") == 0) {
+                status = "500 Internal Server Error";   /* §7.2：5xx 最终响应 */
+            } else if (strcmp(path, "/redir2") == 0) {
+                status = "302 Found"; loc = "/redir";   /* §7.2：多跳重定向链 */
             } else if (strcmp(path, "/slow") == 0) {
                 SLEEP_MS(3000);
                 status = "200 OK";
@@ -235,7 +239,7 @@ static void test_validate_pipeline(void)
 #ifdef _WIN32
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        printf("SKIP test_validate: WSAStartup failed\n");
+        TEST_SKIP("test_validate: WSAStartup failed");
         return;
     }
 #endif
@@ -260,7 +264,7 @@ static void test_validate_pipeline(void)
 
     http_srv srv;
     if (http_srv_start(&srv) != 0) {
-        printf("SKIP test_validate: cannot start mock server\n");
+        TEST_SKIP("test_validate: cannot start mock server");
         return;
     }
 
@@ -276,22 +280,24 @@ static void test_validate_pipeline(void)
     if (bmk_db_open(dbp, &db) != BMK_OK || !db) {
         http_srv_stop(&srv);
         remove_tree(dir);
-        printf("SKIP test_validate: cannot open db\n");
+        TEST_SKIP("test_validate: cannot open db");
         return;
     }
 
-    int64_t ids[10];
+    int64_t ids[12];
     ids[0] = add_url(db, srv.port, "/ok");
     ids[1] = add_url(db, srv.port, "/missing");
     ids[2] = add_url(db, srv.port, "/blocked");
     ids[3] = add_url(db, srv.port, "/ratelimit");
     ids[4] = add_url(db, srv.port, "/redir");
     ids[5] = add_url(db, srv.port, "/needget");
-    /* /slow 会阻塞 mock 服务器 3 秒，必须放最后，避免拖垮后续请求 */
     ids[6] = add_url(db, srv.port, "/head404");
     ids[7] = add_url(db, srv.port, "/head403");
     ids[8] = add_url(db, srv.port, "/head500");
-    ids[9] = add_url(db, srv.port, "/slow");
+    ids[9] = add_url(db, srv.port, "/err500");
+    ids[10] = add_url(db, srv.port, "/redir2");
+    /* /slow 会阻塞 mock 服务器 3 秒，必须放最后，避免拖垮后续请求 */
+    ids[11] = add_url(db, srv.port, "/slow");
 
     bmk_validate_opts o;
     bmk_validate_opts_init(&o);
@@ -303,7 +309,7 @@ static void test_validate_pipeline(void)
     o.interval_ms = 0;
     o.jitter_ms = 0;
 
-    bmk_err e = bmk_validate_run(db, ids, 10, &o, NULL, NULL);
+    bmk_err e = bmk_validate_run(db, ids, 12, &o, NULL, NULL);
     CHECK_EQ(e, BMK_OK, "校验运行完成（无用户取消）");
 
     check_result(db, ids[0], BMK_VALID_GOOD,  200, BMK_NOTE_OK,            "/ok");
@@ -315,7 +321,88 @@ static void test_validate_pipeline(void)
     check_result(db, ids[6], BMK_VALID_GOOD,  200, BMK_NOTE_OK,            "/head404");
     check_result(db, ids[7], BMK_VALID_GOOD,  200, BMK_NOTE_OK,            "/head403");
     check_result(db, ids[8], BMK_VALID_GOOD,  200, BMK_NOTE_OK,            "/head500");
-    check_result(db, ids[9], BMK_VALID_BAD,   0,   BMK_NOTE_TIMEOUT,       "/slow");
+    check_result(db, ids[9], BMK_VALID_BAD,  500, "http_500",             "/err500");
+    check_result(db, ids[10], BMK_VALID_GOOD,  200, BMK_NOTE_OK,          "/redir2");
+    check_result(db, ids[11], BMK_VALID_BAD,   0,   BMK_NOTE_TIMEOUT,     "/slow");
+
+    bmk_db_close(db);
+    remove_tree(dir);
+    http_srv_stop(&srv);
+#ifdef _WIN32
+    WSACleanup();
+#endif
+}
+
+/* §7.2：真实 TLS 失败 —— 对纯 HTTP 端口发起 https:// 请求，
+ * TLS 握手必然失败，必须判为网络层错误而非误判可用。 */
+static void test_tls_failure(void)
+{
+#ifdef _WIN32
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        TEST_SKIP("test_validate: WSAStartup failed");
+        return;
+    }
+#endif
+    http_srv srv;
+    if (http_srv_start(&srv) != 0) {
+        TEST_SKIP("test_validate: cannot start mock server");
+        return;
+    }
+
+    char dir[P_BUF];
+    make_temp_dir(dir, sizeof dir, "tls");
+    char dbp[P_BUF];
+#ifdef _WIN32
+    snprintf(dbp, sizeof dbp, "%s\\tls.db", dir);
+#else
+    snprintf(dbp, sizeof dbp, "%s/tls.db", dir);
+#endif
+    bmk_db *db = NULL;
+    if (bmk_db_open(dbp, &db) != BMK_OK || !db) {
+        http_srv_stop(&srv);
+        remove_tree(dir);
+        TEST_SKIP("test_validate: cannot open db");
+        return;
+    }
+
+    char url[P_BUF];
+    snprintf(url, sizeof url, "https://127.0.0.1:%d/", srv.port);
+    bmk_bookmark b;
+    memset(&b, 0, sizeof b);
+    b.url   = bmk_strdup(url);
+    b.title = bmk_strdup("tls");
+    b.valid = BMK_VALID_UNKNOWN;
+    CHECK_EQ(bmk_bookmark_insert(db, &b), BMK_OK, "插入 TLS 目标");
+    int64_t id = b.id;
+    bmk_bookmark_free(&b);
+
+    bmk_validate_opts o;
+    bmk_validate_opts_init(&o);
+    o.concurrency = 1;
+    o.per_host_limit = 1;
+    o.timeout_s = 5;
+    o.connect_timeout_s = 2;
+    o.retry = 0;
+    o.interval_ms = 0;
+    o.jitter_ms = 0;
+
+    CHECK_EQ(bmk_validate_run(db, &id, 1, &o, NULL, NULL), BMK_OK, "校验运行");
+
+    bmk_bookmark *b2 = NULL;
+    if (bmk_bookmark_get(db, id, &b2) == BMK_OK && b2) {
+        CHECK_EQ(b2->valid, BMK_VALID_BAD, "TLS 失败 → 无效");
+        CHECK_EQ(b2->status_code, 0, "TLS 失败 → status_code=0");
+        CHECK(b2->check_note && *b2->check_note &&
+              strcmp(b2->check_note, BMK_NOTE_OK) != 0 &&
+              strcmp(b2->check_note, BMK_NOTE_BLOCKED) != 0,
+              "TLS 失败 → 网络层错误标识（实际 %s）",
+              b2->check_note ? b2->check_note : "(null)");
+        bmk_bookmark_free(b2);
+        free(b2);
+    } else {
+        CHECK(0, "读取 TLS 用例校验结果失败");
+    }
 
     bmk_db_close(db);
     remove_tree(dir);
@@ -328,5 +415,6 @@ static void test_validate_pipeline(void)
 int main(void)
 {
     test_validate_pipeline();
+    test_tls_failure();
     return test_report("批量校验（本地 HTTP mock）");
 }

@@ -4,6 +4,22 @@
  * 隐私：日志中不打印 UUID 与完整 vless 链接，仅输出节点名与脱敏地址
  * （需求 5.3 第 1 条）。
  */
+/* winsock2.h 必须早于 windows.h（curl 头可能间接引入后者） */
+#ifdef _WIN32
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#  include <windows.h>
+#  include <time.h>
+#else
+#  include <errno.h>
+#  include <fcntl.h>
+#  include <netdb.h>
+#  include <sys/select.h>
+#  include <sys/socket.h>
+#  include <time.h>
+#  include <unistd.h>
+#endif
+
 #include "bmk_proxy.h"
 #include "bmk_db.h"
 #include "bmk_log.h"
@@ -101,23 +117,58 @@ bmk_err bmk_vless_parse(const char *uri, bmk_vless *out)
         out->host = colon ? bmk_strndup(hostport, (size_t)(colon - hostport))
                           : bmk_strdup(hostport);
     }
-    /* 端口必须显式给出（附录 C）；缺端口或端口非法均为解析失败 */
+    /* 端口必须显式给出且为纯数字（附录 C）；缺端口或端口非法均为解析失败。
+     * 不用 atoi：它会静默接受 "443abc" 这类被篡改的输入。 */
     if (!colon) {
         free(main_part);
         bmk_vless_free(out);
         return BMK_ERR_PARSE;
     }
-    out->port = atoi(colon + 1);
-    if (out->port <= 0 || out->port > 65535) {
+    const char *pnum = colon + 1;
+    long pval = 0;
+    for (; ; pnum++) {
+        if (*pnum < '0' || *pnum > '9') {
+            free(main_part);
+            bmk_vless_free(out);
+            return BMK_ERR_PARSE;
+        }
+        pval = pval * 10 + (*pnum - '0');
+        if (pval > 65535) {
+            free(main_part);
+            bmk_vless_free(out);
+            return BMK_ERR_PARSE;
+        }
+        if (!pnum[1]) break;
+    }
+    if (pval <= 0) {
         free(main_part);
         bmk_vless_free(out);
         return BMK_ERR_PARSE;
     }
+    out->port = (int)pval;
 
     if (!out->uuid || !*out->uuid || !out->host || !*out->host) {
         free(main_part);
         bmk_vless_free(out);
         return BMK_ERR_PARSE;
+    }
+    /* uuid 与 host 都会被写进 xray 配置 JSON 与日志：拒绝控制字符与空白。
+     * （JSON 结构注入由 cJSON 转义兜底，这里挡的是换行/空格类污染。） */
+    for (const char *q = out->uuid; *q; q++) {
+        unsigned char ch = (unsigned char)*q;
+        if (ch <= 0x20 || ch == 0x7f) {
+            free(main_part);
+            bmk_vless_free(out);
+            return BMK_ERR_PARSE;
+        }
+    }
+    for (const char *q = out->host; *q; q++) {
+        unsigned char ch = (unsigned char)*q;
+        if (ch <= 0x20 || ch == 0x7f || strchr("@/?#\"'\\", ch)) {
+            free(main_part);
+            bmk_vless_free(out);
+            return BMK_ERR_PARSE;
+        }
     }
 
     /* 附录 C 参数映射 */
@@ -607,25 +658,39 @@ void bmk_proxy_shutdown(void)
     }
 }
 
-/* 构造某节点的 curl 代理串 */
-static char *slot_endpoint(const node_slot *s)
+/* 构造 curl 代理串。凭据做百分号编码，避免 @ : / # 破坏 URL 结构
+ * （旧实现直接拼接，密码含这些字符会被解析到错误的主机）。 */
+static char *endpoint_from_node(const bmk_node *n)
 {
-    char buf[512];
-    if (s->node.type == BMK_NODE_VLESS) {
-        if (!s->node.local_port) return NULL;
-        snprintf(buf, sizeof(buf), "socks5h://127.0.0.1:%d", s->node.local_port);
+    char buf[1024];
+    if (!n) return NULL;
+    if (n->type == BMK_NODE_VLESS) {
+        if (!n->local_port) return NULL;
+        snprintf(buf, sizeof(buf), "socks5h://127.0.0.1:%d", n->local_port);
         return bmk_strdup(buf);
     }
-    if (!s->node.host || s->node.port <= 0) return NULL;
-    const char *scheme = (s->node.type == BMK_NODE_SOCKS5) ? "socks5h" : "http";
-    if (s->node.username && *s->node.username) {
-        snprintf(buf, sizeof(buf), "%s://%s:%s@%s:%d", scheme,
-                 s->node.username, s->node.password ? s->node.password : "",
-                 s->node.host, s->node.port);
+    if (!n->host || n->port <= 0) return NULL;
+    const char *scheme = (n->type == BMK_NODE_SOCKS5) ? "socks5h" : "http";
+    if (n->username && *n->username) {
+        char *u = curl_easy_escape(NULL, n->username, 0);
+        char *p = curl_easy_escape(NULL, n->password ? n->password : "", 0);
+        if (!u || !p) {
+            if (u) curl_free(u);
+            if (p) curl_free(p);
+            return NULL;
+        }
+        snprintf(buf, sizeof(buf), "%s://%s:%s@%s:%d", scheme, u, p, n->host, n->port);
+        curl_free(u);
+        curl_free(p);
     } else {
-        snprintf(buf, sizeof(buf), "%s://%s:%d", scheme, s->node.host, s->node.port);
+        snprintf(buf, sizeof(buf), "%s://%s:%d", scheme, n->host, n->port);
     }
     return bmk_strdup(buf);
+}
+
+static char *slot_endpoint(const node_slot *s)
+{
+    return s ? endpoint_from_node(&s->node) : NULL;
 }
 
 /* 确保 VLESS 节点的 xray 子进程存活：进程异常退出时自动重启（FR-17 第 3 条），
@@ -698,9 +763,16 @@ char *bmk_proxy_next_endpoint(const char *target_url)
 
     size_t pick;
     switch (g_rotation) {
-    case BMK_ROTATE_RANDOM:
+    case BMK_ROTATE_RANDOM: {
+        /* 首次使用时以时间播种；不播种的 rand() 每次进程都从相同序列开始 */
+        static bool seeded = false;
+        if (!seeded) {
+            srand((unsigned)time(NULL));
+            seeded = true;
+        }
         pick = avail[(size_t)rand() % navail];
         break;
+    }
     case BMK_ROTATE_BY_HOST: {
         /* 同一域名整会话内固定同一节点 */
         char *host = target_url ? bmk_url_host(target_url) : NULL;
@@ -735,26 +807,319 @@ static size_t sink_cb(char *p, size_t s, size_t n, void *u)
     return s * n;
 }
 
-bmk_err bmk_proxy_node_test(int64_t id, const char *test_url, long *out_ms)
+/* ------------------------------------------------------------------ */
+/* 代理配置分层校验                                                    */
+/* ------------------------------------------------------------------ */
+
+#ifdef _WIN32
+typedef SOCKET bmk_sock_t;
+#  define BMK_BAD_SOCKET INVALID_SOCKET
+static long long bmk_now_ms(void) { return (long long)GetTickCount64(); }
+#else
+typedef int bmk_sock_t;
+#  define BMK_BAD_SOCKET (-1)
+static long long bmk_now_ms(void)
 {
-    /* 锁内取端点串，curl 网络请求在锁外执行 */
-    char *endpoint = NULL;
-    proxy_lock();
-    node_slot *s = find_slot(id);
-    if (!s) { proxy_unlock(); return BMK_ERR_NOT_FOUND; }
-    endpoint = slot_endpoint(s);
-    proxy_unlock();
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+#endif
 
-    if (!endpoint) return BMK_ERR_UNSUPPORTED;
+static void sock_close(bmk_sock_t s)
+{
+#ifdef _WIN32
+    closesocket(s);
+#else
+    close(s);
+#endif
+}
 
-    const char *url = (test_url && *test_url) ? test_url
-                                              : "https://www.google.com/generate_204";
+static bool proxy_winsock_ready(void)
+{
+#ifdef _WIN32
+    static int ready = 0;
+    if (!ready) {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
+        ready = 1;
+    }
+#endif
+    return true;
+}
+
+static void sock_set_timeout(bmk_sock_t s, int ms)
+{
+#ifdef _WIN32
+    DWORD v = (DWORD)ms;
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&v, sizeof(v));
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char *)&v, sizeof(v));
+#else
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+}
+
+static int sock_send(bmk_sock_t s, const void *buf, size_t n)
+{
+#ifdef _WIN32
+    return send(s, (const char *)buf, (int)n, 0);
+#else
+    return (int)send(s, buf, n, 0);
+#endif
+}
+
+static int sock_recv(bmk_sock_t s, void *buf, size_t n)
+{
+#ifdef _WIN32
+    return recv(s, (char *)buf, (int)n, 0);
+#else
+    return (int)recv(s, buf, n, 0);
+#endif
+}
+
+/* 带超时的 TCP connect；成功时已恢复为阻塞模式 */
+static bmk_sock_t tcp_connect_timed(const char *host, int port, int timeout_ms)
+{
+    char portstr[16];
+    snprintf(portstr, sizeof(portstr), "%d", port);
+
+    struct addrinfo hints, *res = NULL, *p;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, portstr, &hints, &res) != 0 || !res)
+        return BMK_BAD_SOCKET;
+
+    bmk_sock_t fd = BMK_BAD_SOCKET;
+    for (p = res; p; p = p->ai_next) {
+        bmk_sock_t s = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (s == BMK_BAD_SOCKET) continue;
+
+#ifdef _WIN32
+        u_long nb = 1;
+        ioctlsocket(s, FIONBIO, &nb);
+#else
+        int fl = fcntl(s, F_GETFL, 0);
+        fcntl(s, F_SETFL, fl | O_NONBLOCK);
+#endif
+        int rc = connect(s, p->ai_addr, (int)p->ai_addrlen);
+        bool pending = false;
+        if (rc != 0) {
+#ifdef _WIN32
+            int e = WSAGetLastError();
+            pending = (e == WSAEWOULDBLOCK || e == WSAEINPROGRESS);
+#else
+            pending = (errno == EINPROGRESS || errno == EALREADY);
+#endif
+        }
+        if (rc != 0 && !pending) { sock_close(s); continue; }
+
+        if (rc != 0) {
+            fd_set wf, ef;
+            FD_ZERO(&wf); FD_ZERO(&ef);
+            FD_SET(s, &wf); FD_SET(s, &ef);
+            struct timeval tv;
+            tv.tv_sec = timeout_ms / 1000;
+            tv.tv_usec = (timeout_ms % 1000) * 1000;
+            int sel = select((int)s + 1, NULL, &wf, &ef, &tv);
+            if (sel <= 0 || FD_ISSET(s, &ef)) { sock_close(s); continue; }
+            int serr = 0;
+#ifdef _WIN32
+            int slen = sizeof(serr);
+#else
+            socklen_t slen = sizeof(serr);
+#endif
+            if (getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&serr, &slen) != 0 ||
+                serr != 0) { sock_close(s); continue; }
+        }
+#ifdef _WIN32
+        nb = 0;
+        ioctlsocket(s, FIONBIO, &nb);
+#else
+        fl = fcntl(s, F_GETFL, 0);
+        fcntl(s, F_SETFL, fl & ~O_NONBLOCK);
+#endif
+        fd = s;
+        break;
+    }
+    freeaddrinfo(res);
+    return fd;
+}
+
+/* 从测试 URL 提取 CONNECT 目标（不处理 IPv6 字面量，够用） */
+static void target_from_url(const char *url, char *host, size_t hsz, int *port)
+{
+    const char *p = url;
+    *port = 443;
+    if (strncmp(p, "https://", 8) == 0) p += 8;
+    else if (strncmp(p, "http://", 7) == 0) { p += 7; *port = 80; }
+
+    const char *end = p;
+    while (*end && *end != '/' && *end != '?' && *end != '#') end++;
+    size_t n = (size_t)(end - p);
+    if (n >= hsz) n = hsz - 1;
+    memcpy(host, p, n);
+    host[n] = '\0';
+
+    char *at = strrchr(host, '@');
+    if (at) memmove(host, at + 1, strlen(at));
+    char *colon = strrchr(host, ':');
+    if (colon) { *port = atoi(colon + 1); *colon = '\0'; }
+}
+
+/* HTTP 代理：发 CONNECT 建隧道，只看首行状态码 */
+static bool http_handshake(bmk_sock_t s, const bmk_node *cfg,
+                           const char *target, int tport,
+                           char *detail, size_t dsz)
+{
+    char auth[768] = "";
+    if (cfg->username && *cfg->username) {
+        char plain[512];
+        snprintf(plain, sizeof(plain), "%s:%s", cfg->username,
+                 cfg->password ? cfg->password : "");
+        char *b64 = bmk_base64_encode((const unsigned char *)plain, strlen(plain));
+        memset(plain, 0, sizeof(plain));
+        if (b64) {
+            snprintf(auth, sizeof(auth), "Proxy-Authorization: Basic %s\r\n", b64);
+            curl_free(b64);
+        }
+    }
+
+    char req[1536];
+    int n = snprintf(req, sizeof(req),
+                     "CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n%s\r\n",
+                     target, tport, target, tport, auth);
+    if (n <= 0 || (size_t)n >= sizeof(req) || sock_send(s, req, (size_t)n) != n) {
+        snprintf(detail, dsz, "send CONNECT failed");
+        return false;
+    }
+    char resp[512];
+    int got = sock_recv(s, resp, sizeof(resp) - 1);
+    if (got <= 0) {
+        snprintf(detail, dsz, "no HTTP response (protocol mismatch?)");
+        return false;
+    }
+    resp[got] = '\0';
+    if (strncmp(resp, "HTTP/1.", 7) != 0) {
+        snprintf(detail, dsz, "protocol mismatch: not an HTTP proxy");
+        return false;
+    }
+    int code = 0;
+    if (sscanf(resp, "HTTP/1.%*d %d", &code) != 1) code = 0;
+    if (code == 407) {
+        snprintf(detail, dsz, "HTTP 407 proxy authentication required");
+        return false;
+    }
+    if (code < 200 || code >= 300) {
+        snprintf(detail, dsz, "CONNECT rejected (HTTP %d)", code);
+        return false;
+    }
+    snprintf(detail, dsz, "CONNECT ok (HTTP %d)", code);
+    return true;
+}
+
+/* SOCKS5 代理：greeting + 可选 RFC1929 用户名密码子协商 */
+static bool socks5_handshake(bmk_sock_t s, const bmk_node *cfg,
+                             char *detail, size_t dsz)
+{
+    bool has_cred = (cfg->username && *cfg->username);
+    unsigned char greet[4];
+    int glen;
+    if (has_cred) {
+        greet[0] = 5; greet[1] = 2; greet[2] = 0; greet[3] = 2;
+        glen = 4;
+    } else {
+        greet[0] = 5; greet[1] = 1; greet[2] = 0;
+        glen = 3;
+    }
+    if (sock_send(s, greet, (size_t)glen) != glen) {
+        snprintf(detail, dsz, "send SOCKS5 greeting failed");
+        return false;
+    }
+    unsigned char rep[2] = { 0, 0 };
+    if (sock_recv(s, rep, 2) != 2) {
+        snprintf(detail, dsz, "no SOCKS5 greeting response");
+        return false;
+    }
+    if (rep[0] != 0x05) {
+        snprintf(detail, dsz, "protocol mismatch: not a SOCKS5 proxy");
+        return false;
+    }
+    if (rep[1] == 0xFF) {
+        snprintf(detail, dsz, "no acceptable auth method (0xFF)");
+        return false;
+    }
+    if (rep[1] == 0x02) {
+        if (!has_cred) {
+            snprintf(detail, dsz, "proxy requires username/password authentication");
+            return false;
+        }
+        size_t ul = strlen(cfg->username);
+        size_t pl = cfg->password ? strlen(cfg->password) : 0;
+        if (ul > 255 || pl > 255) {
+            snprintf(detail, dsz, "proxy credentials too long");
+            return false;
+        }
+        unsigned char sub[2 + 255 + 1 + 255];
+        size_t k = 0;
+        sub[k++] = 0x01;
+        sub[k++] = (unsigned char)ul;
+        memcpy(sub + k, cfg->username, ul); k += ul;
+        sub[k++] = (unsigned char)pl;
+        if (pl) { memcpy(sub + k, cfg->password, pl); k += pl; }
+        if (sock_send(s, sub, k) != (int)k) {
+            snprintf(detail, dsz, "send SOCKS5 auth failed");
+            return false;
+        }
+        unsigned char ar[2] = { 0, 0 };
+        if (sock_recv(s, ar, 2) != 2 || ar[1] != 0) {
+            snprintf(detail, dsz, "SOCKS5 authentication failed");
+            return false;
+        }
+        snprintf(detail, dsz, "SOCKS5 handshake ok (user/pass)");
+        return true;
+    }
+    if (rep[1] != 0x00) {
+        snprintf(detail, dsz, "unsupported SOCKS5 auth method 0x%02X", rep[1]);
+        return false;
+    }
+    snprintf(detail, dsz, "SOCKS5 handshake ok (no auth)");
+    return true;
+}
+
+/* 阶段 3：经代理访问目标站。407/403/429 明确判为不可用。 */
+static bool target_probe(const bmk_node *cfg, const char *url,
+                         char *detail, size_t dsz)
+{
+    char *endpoint = endpoint_from_node(cfg);
+    if (!endpoint) {
+        snprintf(detail, dsz, "no proxy endpoint");
+        return false;
+    }
     CURL *c = curl_easy_init();
-    if (!c) { free(endpoint); return BMK_ERR_NOMEM; }
-
+    if (!c) {
+        free(endpoint);
+        snprintf(detail, dsz, "curl init failed");
+        return false;
+    }
+    curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(c, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(c, CURLOPT_URL, url);
     curl_easy_setopt(c, CURLOPT_PROXY, endpoint);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 8L);   /* 超时 8s（FR-17 第 4 条） */
+    if (cfg->username && *cfg->username) {
+        char up[512];
+        snprintf(up, sizeof(up), "%s:%s", cfg->username,
+                 cfg->password ? cfg->password : "");
+        curl_easy_setopt(c, CURLOPT_PROXYUSERPWD, up);
+        memset(up, 0, sizeof(up));
+    }
+    curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 8L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 5L);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, sink_cb);
     curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
@@ -762,22 +1127,157 @@ bmk_err bmk_proxy_node_test(int64_t id, const char *test_url, long *out_ms)
     CURLcode rc = curl_easy_perform(c);
     long status = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
-    if (out_ms) {
-        curl_off_t t = 0;
-        curl_easy_getinfo(c, CURLINFO_TOTAL_TIME_T, &t);
-        *out_ms = (long)(t / 1000);
-    }
     curl_easy_cleanup(c);
     free(endpoint);
 
-    bool ok = (rc == CURLE_OK && status > 0 && status < 500);
-    /* 失败节点自动标记不可用并从轮换池剔除 */
+    bool ok = (rc == CURLE_OK && status >= 200 && status < 400);
+    if (ok)                    snprintf(detail, dsz, "target reachable (HTTP %ld)", status);
+    else if (status == 407)    snprintf(detail, dsz, "HTTP 407 proxy authentication required");
+    else if (status == 403 || status == 429)
+                               snprintf(detail, dsz, "target blocked (HTTP %ld)", status);
+    else if (status >= 400)    snprintf(detail, dsz, "target error (HTTP %ld)", status);
+    else                       snprintf(detail, dsz, "network error (%s)", curl_easy_strerror(rc));
+    return ok;
+}
+
+bmk_err bmk_proxy_endpoint_check(const bmk_node *cfg, const char *test_url,
+                                 bmk_proxy_check *out)
+{
+    if (!cfg || !out) return BMK_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+    for (int i = 0; i < BMK_PCHK_STAGES; i++) {
+        out->state[i] = BMK_PCHK_SKIP;
+        snprintf(out->detail[i], sizeof(out->detail[i]), "-");
+    }
+
+    const char *host = cfg->host;
+    int port = cfg->port;
+    bmk_node_type type = cfg->type;
+
+    if (cfg->type == BMK_NODE_VLESS) {
+        if (cfg->local_port <= 0) {
+            out->err = BMK_ERR_UNSUPPORTED;
+            snprintf(out->detail[BMK_PCHK_TCP], sizeof(out->detail[BMK_PCHK_TCP]),
+                     "VLESS: save and start the node first");
+            return out->err;
+        }
+        host = "127.0.0.1";
+        port = cfg->local_port;
+        type = BMK_NODE_SOCKS5;   /* 本地 xray 入站即 SOCKS5 */
+    }
+
+    if (!host || !*host || port <= 0 || port > 65535) {
+        /* 配置本身不合法，第一关即未通过，标 FAIL 让界面/CLI 一眼可见 */
+        out->state[BMK_PCHK_TCP] = BMK_PCHK_FAIL;
+        out->err = BMK_ERR_INVALID_ARG;
+        snprintf(out->detail[BMK_PCHK_TCP], sizeof(out->detail[BMK_PCHK_TCP]),
+                 "invalid host or port");
+        return out->err;
+    }
+    if (!proxy_winsock_ready()) {
+        out->err = BMK_ERR_NETWORK;
+        snprintf(out->detail[BMK_PCHK_TCP], sizeof(out->detail[BMK_PCHK_TCP]),
+                 "WSAStartup failed");
+        return out->err;
+    }
+
+    /* 阶段 1：TCP 连通 */
+    long long t0 = bmk_now_ms();
+    bmk_sock_t s = tcp_connect_timed(host, port, 3000);
+    out->ms[BMK_PCHK_TCP] = (long)(bmk_now_ms() - t0);
+    if (s == BMK_BAD_SOCKET) {
+        out->state[BMK_PCHK_TCP] = BMK_PCHK_FAIL;
+        snprintf(out->detail[BMK_PCHK_TCP], sizeof(out->detail[BMK_PCHK_TCP]),
+                 "TCP %s:%d unreachable (3s)", host, port);
+        out->err = BMK_ERR_NETWORK;
+        return out->err;
+    }
+    out->state[BMK_PCHK_TCP] = BMK_PCHK_OK;
+    snprintf(out->detail[BMK_PCHK_TCP], sizeof(out->detail[BMK_PCHK_TCP]),
+             "TCP %s:%d connected", host, port);
+    sock_set_timeout(s, 3000);
+
+    /* 阶段 2：协议握手 */
+    char thost[256];
+    int tport = 443;
+    target_from_url((test_url && *test_url) ? test_url : "https://example.com/",
+                    thost, sizeof(thost), &tport);
+
+    t0 = bmk_now_ms();
+    bool hs = (type == BMK_NODE_SOCKS5)
+            ? socks5_handshake(s, cfg, out->detail[BMK_PCHK_HANDSHAKE],
+                               sizeof(out->detail[BMK_PCHK_HANDSHAKE]))
+            : http_handshake(s, cfg, thost, tport,
+                             out->detail[BMK_PCHK_HANDSHAKE],
+                             sizeof(out->detail[BMK_PCHK_HANDSHAKE]));
+    out->ms[BMK_PCHK_HANDSHAKE] = (long)(bmk_now_ms() - t0);
+    out->state[BMK_PCHK_HANDSHAKE] = hs ? BMK_PCHK_OK : BMK_PCHK_FAIL;
+    sock_close(s);
+
+    if (!hs) {
+        const char *d = out->detail[BMK_PCHK_HANDSHAKE];
+        bool auth = (strstr(d, "auth") != NULL || strstr(d, "407") != NULL ||
+                     strstr(d, "credentials") != NULL || strstr(d, "requires") != NULL);
+        out->err = auth ? BMK_ERR_AUTH : BMK_ERR_NETWORK;
+        return out->err;
+    }
+    out->usable = true;
+    out->err = BMK_OK;
+
+    /* 阶段 3：可选目标站，失败不改变「代理本身可用」的结论 */
+    if (test_url && *test_url) {
+        t0 = bmk_now_ms();
+        bool ok = target_probe(cfg, test_url,
+                               out->detail[BMK_PCHK_TARGET],
+                               sizeof(out->detail[BMK_PCHK_TARGET]));
+        out->ms[BMK_PCHK_TARGET] = (long)(bmk_now_ms() - t0);
+        out->state[BMK_PCHK_TARGET] = ok ? BMK_PCHK_OK : BMK_PCHK_FAIL;
+    }
+    return BMK_OK;
+}
+
+bmk_err bmk_proxy_node_test(int64_t id, const char *test_url, long *out_ms)
+{
+    if (out_ms) *out_ms = 0;
+
+    /* 锁内复制配置，所有网络操作在锁外执行 */
+    bmk_node cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    proxy_lock();
+    node_slot *s = find_slot(id);
+    if (!s) { proxy_unlock(); return BMK_ERR_NOT_FOUND; }
+    cfg.type       = s->node.type;
+    cfg.port       = s->node.port;
+    cfg.local_port = s->node.local_port;
+    cfg.host       = bmk_strdup(s->node.host);
+    cfg.username   = bmk_strdup(s->node.username);
+    cfg.password   = bmk_strdup(s->node.password);
+    proxy_unlock();
+
+    const char *url = (test_url && *test_url) ? test_url
+                                              : "https://www.google.com/generate_204";
+    bmk_proxy_check chk;
+    bmk_err e = bmk_proxy_endpoint_check(&cfg, url, &chk);
+    free(cfg.host); free(cfg.username); free(cfg.password);
+    (void)e;
+
+    if (out_ms)
+        *out_ms = chk.ms[BMK_PCHK_TARGET] > 0
+                ? chk.ms[BMK_PCHK_TARGET]
+                : chk.ms[BMK_PCHK_TCP] + chk.ms[BMK_PCHK_HANDSHAKE];
+
+    /* 407/403/429 已在 target_probe 判为失败，不再被误判为「可用」 */
+    bool ok = chk.usable && chk.state[BMK_PCHK_TARGET] != BMK_PCHK_FAIL;
     proxy_lock();
     s = find_slot(id);
     if (s) s->node.available = ok;
     proxy_unlock();
-    BMK_INFO("proxy test id=%lld: %s (status=%ld)",
-             (long long)id, ok ? "ok" : "failed", status);
+    BMK_INFO("proxy test id=%lld: tcp=%d handshake=%d target=%d usable=%d",
+             (long long)id, (int)chk.state[BMK_PCHK_TCP],
+             (int)chk.state[BMK_PCHK_HANDSHAKE],
+             (int)chk.state[BMK_PCHK_TARGET], ok);
+
+    if (!chk.usable) return chk.err;
     return ok ? BMK_OK : BMK_ERR_NETWORK;
 }
 
