@@ -6,6 +6,23 @@ pub struct Category {
     pub name: String,
     pub parent_id: Option<i64>,
     pub sort_order: i64,
+    pub updated_at: Option<i64>,
+    pub is_deleted: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncConfig {
+    pub worker_url: String,
+    pub token: String,
+    pub auto_sync: bool,
+    pub last_synced_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncResult {
+    pub pushed_count: usize,
+    pub pulled_count: usize,
+    pub server_time: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

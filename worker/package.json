@@ -1,0 +1,17 @@
+{
+  "name": "bookmark-worker-app",
+  "version": "1.0.0",
+  "description": "Standalone Online Bookmark Manager & Cloud Sync Service powered by Cloudflare Workers and D1",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init:local": "wrangler d1 execute bookmarks-db --local --file=./schema.sql",
+    "db:init:remote": "wrangler d1 execute bookmarks-db --remote --file=./schema.sql"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250224.0",
+    "typescript": "^5.7.0",
+    "wrangler": "^3.114.0"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bookmark-online",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-02-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bookmarks-db",
+      "database_id": "YOUR_D1_DATABASE_ID_OR_OVERRIDDEN_BY_CI"
+    }
+  ],
+  "vars": {
+    "APP_TITLE": "我的网络收藏夹 (Online Bookmarks)",
+    "ALLOW_PUBLIC_READ": "false"
+  }
+}

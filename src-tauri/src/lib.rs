@@ -3,11 +3,15 @@ pub mod db;
 pub mod fetch;
 pub mod models;
 pub mod netscape;
+pub mod sync;
 pub mod url;
 
 use db::Database;
 use fetch::ProxyConfig;
-use models::{Bookmark, BookmarkCreateInput, BookmarkFilter, BookmarkUpdateInput, Category, Tag};
+use models::{
+    Bookmark, BookmarkCreateInput, BookmarkFilter, BookmarkUpdateInput, Category, SyncConfig,
+    SyncResult, Tag,
+};
 use std::sync::Arc;
 use tauri::{Manager, State};
 
@@ -237,6 +241,34 @@ async fn test_proxy(proxy_url: String) -> Result<fetch::ProxyTestResult, String>
     Ok(fetch::test_proxy_connection(&proxy_url).await)
 }
 
+// 云同步管理命令
+#[tauri::command]
+fn get_sync_config(state: State<'_, AppState>) -> Result<SyncConfig, String> {
+    let worker_url = state.db.get_setting("cf_worker_url").unwrap_or_default().unwrap_or_default();
+    let token = state.db.get_setting("cf_sync_token").unwrap_or_default().unwrap_or_default();
+    let auto_sync = state.db.get_setting("cf_auto_sync").unwrap_or_default().unwrap_or_else(|| "false".to_string()) == "true";
+    let last_synced_at = state.db.get_setting("cf_last_synced_at").unwrap_or_default().and_then(|s| s.parse().ok());
+    Ok(SyncConfig {
+        worker_url,
+        token,
+        auto_sync,
+        last_synced_at,
+    })
+}
+
+#[tauri::command]
+fn save_sync_config(config: SyncConfig, state: State<'_, AppState>) -> Result<(), String> {
+    state.db.set_setting("cf_worker_url", &config.worker_url.trim()).map_err(|e| e.to_string())?;
+    state.db.set_setting("cf_sync_token", &config.token.trim()).map_err(|e| e.to_string())?;
+    state.db.set_setting("cf_auto_sync", if config.auto_sync { "true" } else { "false" }).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn sync_with_cloudflare(state: State<'_, AppState>) -> Result<SyncResult, String> {
+    sync::perform_two_way_sync(&state.db).await
+}
+
 #[derive(serde::Deserialize)]
 pub struct CheckTarget {
     pub id: i64,
@@ -311,6 +343,9 @@ pub fn run() {
             get_proxy_settings,
             save_proxy_settings,
             test_proxy,
+            get_sync_config,
+            save_sync_config,
+            sync_with_cloudflare,
             check_bookmarks_batch
         ])
         .run(tauri::generate_context!())

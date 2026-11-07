@@ -86,6 +86,9 @@ impl Database {
 
         // 向后兼容迁移：补充可能缺失的字段
         let _ = conn.execute("ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0;", []);
+        let _ = conn.execute("ALTER TABLE categories ADD COLUMN updated_at INTEGER DEFAULT 0;", []);
+        let _ = conn.execute("ALTER TABLE categories ADD COLUMN is_deleted INTEGER DEFAULT 0;", []);
+        let _ = conn.execute("ALTER TABLE bookmarks ADD COLUMN is_deleted INTEGER DEFAULT 0;", []);
 
         Ok(())
     }
@@ -93,13 +96,15 @@ impl Database {
     // --- 分类管理 ---
     pub fn get_categories(&self) -> Result<Vec<Category>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, parent_id, coalesce(sort_order, 0) FROM categories ORDER BY coalesce(sort_order, 0) ASC, name COLLATE NOCASE ASC")?;
+        let mut stmt = conn.prepare("SELECT id, name, parent_id, coalesce(sort_order, 0), coalesce(updated_at, 0), coalesce(is_deleted, 0) FROM categories WHERE coalesce(is_deleted, 0) = 0 ORDER BY coalesce(sort_order, 0) ASC, name COLLATE NOCASE ASC")?;
         let rows = stmt.query_map([], |row| {
             Ok(Category {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 parent_id: row.get(2)?,
                 sort_order: row.get(3)?,
+                updated_at: Some(row.get(4)?),
+                is_deleted: Some(row.get(5)?),
             })
         })?;
 
@@ -112,6 +117,7 @@ impl Database {
 
     pub fn create_category(&self, name: &str, parent_id: Option<i64>) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp();
         // 计算下一个 sort_order
         let next_order: i64 = conn
             .query_row(
@@ -122,8 +128,8 @@ impl Database {
             .unwrap_or(0);
 
         conn.execute(
-            "INSERT INTO categories (name, parent_id, sort_order) VALUES (?1, ?2, ?3)",
-            params![name.trim(), parent_id, next_order],
+            "INSERT INTO categories (name, parent_id, sort_order, updated_at, is_deleted) VALUES (?1, ?2, ?3, ?4, 0)",
+            params![name.trim(), parent_id, next_order, now],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -133,10 +139,11 @@ impl Database {
         if trimmed.is_empty() {
             return Err("分类名称不能为空".to_string());
         }
+        let now = chrono::Utc::now().timestamp();
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE categories SET name = ?1 WHERE id = ?2",
-            params![trimmed, id],
+            "UPDATE categories SET name = ?1, updated_at = ?2 WHERE id = ?3",
+            params![trimmed, now, id],
         ).map_err(|e| format!("重命名分类失败: {}", e))?;
         Ok(())
     }
@@ -163,9 +170,10 @@ impl Database {
             }
         }
 
+        let now = chrono::Utc::now().timestamp();
         conn.execute(
-            "UPDATE categories SET parent_id = ?1 WHERE id = ?2",
-            params![new_parent_id, id],
+            "UPDATE categories SET parent_id = ?1, updated_at = ?2 WHERE id = ?3",
+            params![new_parent_id, now, id],
         ).map_err(|e| format!("更新分类层级失败: {}", e))?;
 
         Ok(())
@@ -173,11 +181,12 @@ impl Database {
 
     pub fn reorder_categories(&self, ordered_ids: &[i64]) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp();
         let tx = conn.transaction()?;
         {
-            let mut stmt = tx.prepare("UPDATE categories SET sort_order = ?1 WHERE id = ?2")?;
+            let mut stmt = tx.prepare("UPDATE categories SET sort_order = ?1, updated_at = ?2 WHERE id = ?3")?;
             for (idx, &id) in ordered_ids.iter().enumerate() {
-                stmt.execute(params![idx as i64, id])?;
+                stmt.execute(params![idx as i64, now, id])?;
             }
         }
         tx.commit()?;
@@ -185,8 +194,10 @@ impl Database {
     }
 
     pub fn delete_category(&self, id: i64) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM categories WHERE id = ?1", params![id])?;
+        conn.execute("UPDATE categories SET is_deleted = 1, updated_at = ?1 WHERE id = ?2 OR parent_id = ?2", params![now, id])?;
+        conn.execute("UPDATE bookmarks SET category_id = NULL, updated_at = ?1 WHERE category_id = ?2", params![now, id])?;
         Ok(())
     }
 
@@ -327,8 +338,9 @@ impl Database {
     }
 
     pub fn delete_bookmark(&self, id: i64) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM bookmarks WHERE id = ?1", params![id])?;
+        conn.execute("UPDATE bookmarks SET is_deleted = 1, updated_at = ?1 WHERE id = ?2", params![now, id])?;
         Ok(())
     }
 
@@ -340,7 +352,7 @@ impl Database {
                     b.valid, b.status_code, b.last_checked_at, b.check_note, b.created_at, b.updated_at
              FROM bookmarks b
              LEFT JOIN categories c ON b.category_id = c.id
-             WHERE 1=1"
+             WHERE coalesce(b.is_deleted, 0) = 0"
         );
 
         let mut conditions = Vec::new();
@@ -663,6 +675,231 @@ impl Database {
         )?;
         Ok(())
     }
+
+    // --- 云同步增量数据拉取与合并 ---
+    pub fn get_sync_payload_since(
+        &self,
+        since: i64,
+    ) -> Result<(Vec<crate::sync::CloudCategory>, Vec<crate::sync::CloudBookmark>)> {
+        let conn = self.conn.lock().unwrap();
+
+        // 1. 获取变更分类
+        let mut cat_stmt = conn.prepare(
+            "SELECT id, name, parent_id, sort_order, coalesce(updated_at, 0), coalesce(is_deleted, 0)
+             FROM categories
+             WHERE coalesce(updated_at, 0) > ?1",
+        )?;
+        let cat_rows = cat_stmt.query_map(params![since], |row| {
+            Ok(crate::sync::CloudCategory {
+                id: Some(row.get(0)?),
+                name: row.get(1)?,
+                parent_id: row.get(2)?,
+                sort_order: Some(row.get(3)?),
+                updated_at: row.get(4)?,
+                is_deleted: Some(row.get(5)?),
+            })
+        })?;
+        let mut cats = Vec::new();
+        for c in cat_rows {
+            cats.push(c?);
+        }
+
+        // 2. 获取变更书签
+        let mut bm_stmt = conn.prepare(
+            "SELECT b.id, b.title, b.url, b.url_key, b.icon, b.category_id,
+                    c.name as category_name, b.valid, b.created_at, b.updated_at, coalesce(b.is_deleted, 0)
+             FROM bookmarks b
+             LEFT JOIN categories c ON b.category_id = c.id
+             WHERE b.updated_at > ?1",
+        )?;
+        let bm_rows = bm_stmt.query_map(params![since], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                crate::sync::CloudBookmark {
+                    id: Some(row.get(0)?),
+                    title: row.get(1)?,
+                    url: row.get(2)?,
+                    url_key: Some(row.get(3)?),
+                    icon: row.get(4)?,
+                    category_id: row.get(5)?,
+                    category_name: row.get(6)?,
+                    tags: None,
+                    valid: row.get(7)?,
+                    created_at: Some(row.get(8)?),
+                    updated_at: row.get(9)?,
+                    is_deleted: Some(row.get(10)?),
+                },
+            ))
+        })?;
+
+        let mut bms = Vec::new();
+        for r in bm_rows {
+            let (bm_id, mut cloud_bm) = r?;
+            let mut tag_stmt = conn.prepare(
+                "SELECT t.name FROM tags t
+                 JOIN bookmark_tags bt ON t.id = bt.tag_id
+                 WHERE bt.bookmark_id = ?1",
+            )?;
+            let tag_rows = tag_stmt.query_map(params![bm_id], |tr| tr.get::<_, String>(0))?;
+            let mut tags = Vec::new();
+            for t in tag_rows {
+                tags.push(t?);
+            }
+            cloud_bm.tags = Some(tags);
+            bms.push(cloud_bm);
+        }
+
+        Ok((cats, bms))
+    }
+
+    pub fn apply_cloud_sync_changes(
+        &self,
+        categories: &[crate::sync::CloudCategory],
+        bookmarks: &[crate::sync::CloudBookmark],
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        // 1. 合并分类
+        for cat in categories {
+            let is_del = cat.is_deleted.unwrap_or(0) == 1;
+            let existing_id: Option<(i64, i64)> = tx
+                .query_row(
+                    "SELECT id, coalesce(updated_at, 0) FROM categories WHERE name = ?1 COLLATE NOCASE",
+                    params![cat.name],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok();
+
+            if is_del {
+                if let Some((id, _)) = existing_id {
+                    tx.execute(
+                        "UPDATE categories SET is_deleted = 1, updated_at = ?1 WHERE id = ?2",
+                        params![cat.updated_at, id],
+                    )?;
+                }
+            } else if let Some((id, local_updated)) = existing_id {
+                if cat.updated_at >= local_updated {
+                    tx.execute(
+                        "UPDATE categories SET sort_order = ?1, updated_at = ?2, is_deleted = 0 WHERE id = ?3",
+                        params![cat.sort_order.unwrap_or(0), cat.updated_at, id],
+                    )?;
+                }
+            } else {
+                tx.execute(
+                    "INSERT INTO categories (name, parent_id, sort_order, updated_at, is_deleted)
+                     VALUES (?1, ?2, ?3, ?4, 0)",
+                    params![
+                        cat.name,
+                        cat.parent_id,
+                        cat.sort_order.unwrap_or(0),
+                        cat.updated_at
+                    ],
+                )?;
+            }
+        }
+
+        // 2. 合并书签
+        for bm in bookmarks {
+            let is_del = bm.is_deleted.unwrap_or(0) == 1;
+            let url_key = bm.url_key.clone().unwrap_or_else(|| {
+                crate::url::normalize_url(&bm.url).unwrap_or_else(|_| bm.url.clone())
+            });
+
+            let existing: Option<(i64, i64)> = tx
+                .query_row(
+                    "SELECT id, updated_at FROM bookmarks WHERE url_key = ?1",
+                    params![url_key],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok();
+
+            if is_del {
+                if let Some((id, _)) = existing {
+                    tx.execute(
+                        "UPDATE bookmarks SET is_deleted = 1, updated_at = ?1 WHERE id = ?2",
+                        params![bm.updated_at, id],
+                    )?;
+                }
+            } else {
+                let target_category_id = if let Some(ref cat_name) = bm.category_name {
+                    tx.query_row(
+                        "SELECT id FROM categories WHERE name = ?1 COLLATE NOCASE",
+                        params![cat_name],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .ok()
+                } else {
+                    None
+                };
+
+                let bookmark_id = match existing {
+                    Some((id, local_updated)) => {
+                        if bm.updated_at >= local_updated {
+                            tx.execute(
+                                "UPDATE bookmarks
+                                 SET title = ?1, url = ?2, icon = coalesce(?3, icon), category_id = ?4, valid = ?5, updated_at = ?6, is_deleted = 0
+                                 WHERE id = ?7",
+                                params![
+                                    bm.title,
+                                    bm.url,
+                                    bm.icon,
+                                    target_category_id,
+                                    bm.valid.unwrap_or(1),
+                                    bm.updated_at,
+                                    id
+                                ],
+                            )?;
+                        }
+                        id
+                    }
+                    None => {
+                        tx.execute(
+                            "INSERT INTO bookmarks (title, url, url_key, icon, category_id, valid, created_at, updated_at, is_deleted)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
+                            params![
+                                bm.title,
+                                bm.url,
+                                url_key,
+                                bm.icon,
+                                target_category_id,
+                                bm.valid.unwrap_or(1),
+                                bm.created_at.unwrap_or(bm.updated_at),
+                                bm.updated_at
+                            ],
+                        )?;
+                        tx.last_insert_rowid()
+                    }
+                };
+
+                // 合并标签
+                if let Some(ref tags) = bm.tags {
+                    for tag_name in tags {
+                        let trimmed = tag_name.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        tx.execute(
+                            "INSERT OR IGNORE INTO tags (name) VALUES (?1)",
+                            params![trimmed],
+                        )?;
+                        let tag_id: i64 = tx.query_row(
+                            "SELECT id FROM tags WHERE name = ?1 COLLATE NOCASE",
+                            params![trimmed],
+                            |r| r.get(0),
+                        )?;
+                        tx.execute(
+                            "INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id) VALUES (?1, ?2)",
+                            params![bookmark_id, tag_id],
+                        )?;
+                    }
+                }
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -832,5 +1069,64 @@ mod tests {
         }).unwrap();
         assert_eq!(bms.len(), 1);
         assert_eq!(bms[0].category_id, None);
+    }
+
+    #[test]
+    fn test_sync_payload_and_cloud_merge() {
+        let db = Database::new_in_memory().unwrap();
+
+        // 1. 本地创建数据
+        let c_id = db.create_category("技术分类", None).unwrap();
+        let _bm_id = db.create_bookmark(&BookmarkCreateInput {
+            title: "本地收藏".to_string(),
+            url: "https://local-test.com".to_string(),
+            category_id: Some(c_id),
+            tags: vec!["本地".to_string()],
+            icon_data_url: None,
+        }).unwrap();
+
+        let (cats, bms) = db.get_sync_payload_since(0).unwrap();
+        assert_eq!(cats.len(), 1);
+        assert_eq!(bms.len(), 1);
+        assert_eq!(bms[0].title, "本地收藏");
+
+        // 2. 模拟从云端同步新分类和新书签
+        let cloud_cats = vec![crate::sync::CloudCategory {
+            id: None,
+            name: "云端分类".to_string(),
+            parent_id: None,
+            sort_order: Some(0),
+            updated_at: 1000,
+            is_deleted: Some(0),
+        }];
+        let cloud_bms = vec![crate::sync::CloudBookmark {
+            id: None,
+            title: "云端收藏".to_string(),
+            url: "https://cloud-test.com".to_string(),
+            url_key: Some("https://cloud-test.com".to_string()),
+            icon: None,
+            category_id: None,
+            category_name: Some("云端分类".to_string()),
+            tags: Some(vec!["云端".to_string()]),
+            valid: Some(1),
+            created_at: Some(1000),
+            updated_at: 1000,
+            is_deleted: Some(0),
+        }];
+
+        db.apply_cloud_sync_changes(&cloud_cats, &cloud_bms).unwrap();
+
+        let all_cats = db.get_categories().unwrap();
+        assert_eq!(all_cats.len(), 2);
+
+        let all_bms = db.list_bookmarks(&BookmarkFilter {
+            search: None,
+            category_id: None,
+            tag: None,
+            valid_state: None,
+            check_note: None,
+            sort_by: None,
+        }).unwrap();
+        assert_eq!(all_bms.len(), 2);
     }
 }
