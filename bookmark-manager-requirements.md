@@ -681,15 +681,29 @@ CREATE TABLE settings (
 2. 左侧分类节点在悬停（dragover）时高亮显示接收状态。
 3. 释放（drop）后，前端通过 Tauri 命令原子更新目标书签的 `category_id`，并即时更新视图。
 
-### FR-25 基于 Cloudflare Workers 的远端云同步（P2）
+### FR-25 基于 Cloudflare Workers 的独立在线网络收藏夹与远端云同步（P2）
 
-**描述**：使用 Cloudflare Workers + KV/D1 实现高可用、低成本的全球边缘同步服务。
+**描述**：将远端模块设计为基于 Cloudflare Workers + D1 的独立可运行在线网络收藏夹系统，支持通过 GitHub Actions 自动化 CI/CD 部署。既能作为独立 Web 端在线收藏夹直接访问和管理，又能为桌面客户端提供高效的双向增量同步服务。
 
 **详细规则**：
-1. **服务端架构**：基于 Cloudflare Workers 编写 Serverless 同步 API，采用 KV 或 D1 存储用户加密/授权的书签数据。
-2. **认证鉴权**：请求需携带预设的 Bearer Token / API Key，非法请求一律拒绝。
-3. **数据格式**：支持以 JSON 格式全量同步与增量同步（书签列表、分类树、标签映射），记录时间戳 `last_synced_at`。
-4. **客户端操作**：桌面端提供“同步至 Cloudflare”与“从 Cloudflare 拉取”按钮，支持自动同步与冲突覆盖策略。
+1. **GitHub 自动化部署 (CI/CD)**：
+   - 建立 `.github/workflows/deploy-worker.yml`，在推送到仓库主分支或手动触发时，自动通过 `cloudflare/wrangler-action` 部署 Worker 与执行 D1 数据库迁移。
+   - 用户只需在 GitHub 仓库中配置 `CLOUDFLARE_API_TOKEN` 和 `CLOUDFLARE_ACCOUNT_ID` 即可实现全自动交付。
+2. **独立在线 Web 收藏夹功能**：
+   - 访问 Worker 域名时提供轻量、现代、自适应移动端的独立 Web 应用界面。
+   - 支持网页端实时检索、按分类/标签筛选、打开链接、新增/编辑/删除书签。
+   - 支持安全密码鉴权（Token / Session Cookie），保障在线私有收藏数据的安全。
+   - 支持云端边缘自动抓取标题与 Favicon 图标。
+3. **服务端架构与存储**：
+   - 基于 Cloudflare Workers + D1（Serverless SQLite），数据结构与桌面端 SQLite 高度同构（`bookmarks`, `categories`, `tags`, `bookmark_tags`）。
+   - 引入软删除机制（`is_deleted` 与 `updated_at`），精准支持多端无缝双向增量同步。
+4. **客户端与插件同步 API**：
+   - `GET /api/sync?since=<timestamp>`：增量拉取自指定时间以来的所有新增、修改和删除记录。
+   - `POST /api/sync`：提交本地增量变更，服务端原子事务合并后返回最新时间戳。
+   - `POST /api/bookmarks`：专供 Chrome 浏览器插件与快捷工具调用的单条收藏端点。
+5. **桌面客户端操作**：
+   - 桌面端配置 Cloudflare Worker 地址与同步 Token。
+   - 提供“一键同步”、“从云端拉取”、“覆盖云端”等选项，支持自动/定时后台同步与操作日志展示。
 
 ### FR-26 配套 Chrome 浏览器插件（Manifest V3）（P2）
 
