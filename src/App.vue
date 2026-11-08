@@ -176,6 +176,7 @@ const proxyForm = reactive<ProxyConfig>({
 });
 
 // 云端同步弹窗与状态
+const isTauriEnv = ref(typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window));
 const isSyncModalOpen = ref(false);
 const isSyncing = ref(false);
 const syncConfig = reactive<SyncConfig>({
@@ -244,6 +245,10 @@ async function loadSyncConfig() {
 }
 
 async function saveSyncConfig() {
+  if (!isTauriEnv.value) {
+    alert("当前处于普通浏览器网页环境，无法调用本地 Tauri 桌面端引擎。\n\n请在本地终端执行 `bun run tauri dev` 启动桌面端应用程序窗口！");
+    return;
+  }
   try {
     await invoke("save_sync_config", {
       config: {
@@ -261,6 +266,10 @@ async function saveSyncConfig() {
 }
 
 async function handleManualSync() {
+  if (!isTauriEnv.value) {
+    alert("当前处于普通浏览器网页环境，无法调用本地 Tauri 桌面端引擎。\n\n请在本地终端执行 `bun run tauri dev` 启动桌面端应用程序窗口！");
+    return;
+  }
   if (!syncConfig.worker_url.trim()) {
     isSyncModalOpen.value = true;
     return;
@@ -281,6 +290,10 @@ async function handleManualSync() {
 }
 
 async function handleWipeAndPushAll() {
+  if (!isTauriEnv.value) {
+    alert("当前处于普通浏览器网页环境，无法调用本地 Tauri 桌面端引擎。\n\n请在本地终端执行 `bun run tauri dev` 启动桌面端应用程序窗口！");
+    return;
+  }
   if (!syncConfig.worker_url.trim()) {
     isSyncModalOpen.value = true;
     return;
@@ -304,6 +317,10 @@ async function handleWipeAndPushAll() {
 }
 
 async function handleFullPullAndOverwrite() {
+  if (!isTauriEnv.value) {
+    alert("当前处于普通浏览器网页环境，无法调用本地 Tauri 桌面端引擎。\n\n请在本地终端执行 `bun run tauri dev` 启动桌面端应用程序窗口！");
+    return;
+  }
   if (!syncConfig.worker_url.trim()) {
     isSyncModalOpen.value = true;
     return;
@@ -938,7 +955,16 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="flex h-screen w-screen overflow-hidden bg-slate-50 text-slate-800">
+  <div class="flex h-screen w-screen overflow-hidden bg-slate-50 text-slate-800 relative">
+    <!-- 外部普通浏览器运行提示 Banner -->
+    <div
+      v-if="!isTauriEnv"
+      class="fixed top-0 left-0 right-0 z-50 bg-amber-500 text-white px-4 py-2 text-xs font-medium text-center shadow-md flex items-center justify-center gap-2"
+    >
+      <ShieldAlert class="w-4 h-4 shrink-0" />
+      <span>⚠️ 提示：您当前在外部普通浏览器（localhost:1420）中浏览。本地 SQLite 数据库与云同步底层接口仅在【Tauri 桌面独立客户端窗口】中有效。请在本地终端执行 <code>bun run tauri dev</code> 打开桌面端窗口。</span>
+    </div>
+
     <!-- 隐藏的文件上传 input -->
     <input
       type="file"
