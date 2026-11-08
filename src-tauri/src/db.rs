@@ -900,6 +900,102 @@ impl Database {
         tx.commit()?;
         Ok(())
     }
+
+    /// 全新覆盖下载：清空本地数据，并将从云端拉取的全量分类与书签完整写入
+    pub fn overwrite_all_from_cloud(
+        &self,
+        categories: &[crate::sync::CloudCategory],
+        bookmarks: &[crate::sync::CloudBookmark],
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        // 清理本地旧数据
+        tx.execute("DELETE FROM bookmark_tags", [])?;
+        tx.execute("DELETE FROM bookmarks", [])?;
+        tx.execute("DELETE FROM categories", [])?;
+        tx.execute("DELETE FROM tags", [])?;
+
+        // 1. 写入所有非删除分类
+        for cat in categories {
+            if cat.is_deleted.unwrap_or(0) == 1 {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO categories (name, parent_id, sort_order, updated_at, is_deleted)
+                 VALUES (?1, ?2, ?3, ?4, 0)",
+                params![
+                    cat.name,
+                    cat.parent_id,
+                    cat.sort_order.unwrap_or(0),
+                    cat.updated_at
+                ],
+            )?;
+        }
+
+        // 2. 写入所有非删除书签
+        for bm in bookmarks {
+            if bm.is_deleted.unwrap_or(0) == 1 {
+                continue;
+            }
+            let url_key = bm.url_key.clone().unwrap_or_else(|| {
+                crate::url::normalize_url(&bm.url).unwrap_or_else(|_| bm.url.clone())
+            });
+
+            let target_category_id = if let Some(ref cat_name) = bm.category_name {
+                tx.query_row(
+                    "SELECT id FROM categories WHERE name = ?1 COLLATE NOCASE",
+                    params![cat_name],
+                    |r| r.get::<_, i64>(0),
+                )
+                .ok()
+            } else {
+                None
+            };
+
+            tx.execute(
+                "INSERT INTO bookmarks (title, url, url_key, icon, category_id, valid, created_at, updated_at, is_deleted)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
+                params![
+                    bm.title,
+                    bm.url,
+                    url_key,
+                    bm.icon,
+                    target_category_id,
+                    bm.valid.unwrap_or(1),
+                    bm.created_at.unwrap_or(bm.updated_at),
+                    bm.updated_at
+                ],
+            )?;
+            let bookmark_id = tx.last_insert_rowid();
+
+            // 写入标签
+            if let Some(ref tags) = bm.tags {
+                for tag_name in tags {
+                    let trimmed = tag_name.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    tx.execute(
+                        "INSERT OR IGNORE INTO tags (name) VALUES (?1)",
+                        params![trimmed],
+                    )?;
+                    let tag_id: i64 = tx.query_row(
+                        "SELECT id FROM tags WHERE name = ?1 COLLATE NOCASE",
+                        params![trimmed],
+                        |r| r.get(0),
+                    )?;
+                    tx.execute(
+                        "INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id) VALUES (?1, ?2)",
+                        params![bookmark_id, tag_id],
+                    )?;
+                }
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ pub struct SyncConfig {
     pub worker_url: String,
     pub token: String,
     pub auto_sync: bool,
+    pub use_proxy: Option<bool>,
     pub last_synced_at: Option<i64>,
 }
 

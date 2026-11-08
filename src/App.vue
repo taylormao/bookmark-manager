@@ -45,6 +45,7 @@ interface SyncConfig {
   worker_url: string;
   token: string;
   auto_sync: boolean;
+  use_proxy: boolean;
   last_synced_at: number | null;
 }
 
@@ -181,6 +182,7 @@ const syncConfig = reactive<SyncConfig>({
   worker_url: "",
   token: "",
   auto_sync: false,
+  use_proxy: false,
   last_synced_at: null,
 });
 
@@ -230,10 +232,11 @@ async function loadProxySettings() {
 
 async function loadSyncConfig() {
   try {
-    const cfg: SyncConfig = await invoke("get_sync_config");
+    const cfg: any = await invoke("get_sync_config");
     syncConfig.worker_url = cfg.worker_url || "";
     syncConfig.token = cfg.token || "";
-    syncConfig.auto_sync = cfg.auto_sync;
+    syncConfig.auto_sync = cfg.auto_sync ?? false;
+    syncConfig.use_proxy = cfg.use_proxy ?? false;
     syncConfig.last_synced_at = cfg.last_synced_at;
   } catch (err) {
     console.error("Failed to load sync config:", err);
@@ -247,6 +250,7 @@ async function saveSyncConfig() {
         worker_url: syncConfig.worker_url,
         token: syncConfig.token,
         auto_sync: syncConfig.auto_sync,
+        use_proxy: syncConfig.use_proxy,
         last_synced_at: syncConfig.last_synced_at,
       },
     });
@@ -267,10 +271,56 @@ async function handleManualSync() {
     await saveSyncConfig();
     const res: SyncResult = await invoke("sync_with_cloudflare");
     syncConfig.last_synced_at = res.server_time;
-    showToast(`云同步成功！推送 ${res.pushed_count} 条，拉取 ${res.pulled_count} 条`);
+    showToast(`增量双向同步成功！推送 ${res.pushed_count} 条，拉取 ${res.pulled_count} 条`);
     await refreshAll();
   } catch (err) {
     alert("云同步失败: " + err);
+  } finally {
+    isSyncing.value = false;
+  }
+}
+
+async function handleWipeAndPushAll() {
+  if (!syncConfig.worker_url.trim()) {
+    isSyncModalOpen.value = true;
+    return;
+  }
+  if (!confirm("⚠️ 确定要清空云端并全新上传本地全部数据吗？\n\n此操作会先彻底清空 Cloudflare 远端的数据，再将本地全部书签与分类完整写入云端。")) {
+    return;
+  }
+
+  isSyncing.value = true;
+  try {
+    await saveSyncConfig();
+    const res: SyncResult = await invoke("sync_wipe_and_push_all");
+    syncConfig.last_synced_at = res.server_time;
+    showToast(`全新覆盖上传完成！共推送 ${res.pushed_count} 条数据至云端`);
+    await refreshAll();
+  } catch (err) {
+    alert("全新上传失败: " + err);
+  } finally {
+    isSyncing.value = false;
+  }
+}
+
+async function handleFullPullAndOverwrite() {
+  if (!syncConfig.worker_url.trim()) {
+    isSyncModalOpen.value = true;
+    return;
+  }
+  if (!confirm("⚠️ 警告：确定要清空本地数据并拉取云端覆盖吗？\n\n此操作会清空本地数据库，并完全以云端数据为准进行覆盖，不可撤销！")) {
+    return;
+  }
+
+  isSyncing.value = true;
+  try {
+    await saveSyncConfig();
+    const res: SyncResult = await invoke("sync_full_pull_and_overwrite");
+    syncConfig.last_synced_at = res.server_time;
+    showToast(`全新覆盖下载完成！本地已恢复为云端 ${res.pulled_count} 条数据`);
+    await refreshAll();
+  } catch (err) {
+    alert("全新下载失败: " + err);
   } finally {
     isSyncing.value = false;
   }
@@ -1637,90 +1687,7 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- 弹窗：Cloudflare Workers 云端同步设置 -->
-    <div
-      v-if="isSyncModalOpen"
-      class="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 z-50"
-    >
-      <div class="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
-        <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <Cloud class="w-5 h-5 text-blue-600" />
-            <h2 class="text-base font-bold text-slate-900">Cloudflare Workers 云同步配置</h2>
-          </div>
-          <button @click="isSyncModalOpen = false" class="text-slate-400 hover:text-slate-600 text-lg leading-none cursor-pointer">
-            &times;
-          </button>
-        </div>
-        <div class="p-6 space-y-4 text-xs text-slate-600">
-          <div class="bg-blue-50 text-blue-800 p-3 rounded-xl border border-blue-100 leading-relaxed">
-            💡 依托 Cloudflare Workers + D1 全球边缘架构，数据可在独立网页端、Chrome 插件与多台电脑之间秒级增量双向同步。
-          </div>
-
-          <div>
-            <label class="block font-semibold uppercase mb-1">Worker 线上地址</label>
-            <input
-              v-model="syncConfig.worker_url"
-              type="url"
-              placeholder="例如：https://bookmark-online.my-subdomain.workers.dev"
-              class="w-full text-xs px-3 py-2 border border-slate-200 rounded-lg outline-none focus:border-blue-500 bg-white"
-            />
-          </div>
-
-          <div>
-            <label class="block font-semibold uppercase mb-1">访问密钥 (ACCESS_TOKEN)</label>
-            <input
-              v-model="syncConfig.token"
-              type="password"
-              placeholder="Worker 中配置的 ACCESS_TOKEN 密钥"
-              class="w-full text-xs px-3 py-2 border border-slate-200 rounded-lg outline-none focus:border-blue-500 bg-white"
-            />
-          </div>
-
-          <div class="flex items-center gap-2 pt-1">
-            <input
-              id="auto-sync"
-              type="checkbox"
-              v-model="syncConfig.auto_sync"
-              class="rounded text-blue-600 focus:ring-blue-500 h-4 w-4 border-slate-300"
-            />
-            <label for="auto-sync" class="text-xs text-slate-700 cursor-pointer">
-              启动软件时自动静默双向同步
-            </label>
-          </div>
-
-          <div v-if="syncConfig.last_synced_at" class="text-[11px] text-slate-400 pt-1">
-            上次成功同步时间：{{ new Date(syncConfig.last_synced_at * 1000).toLocaleString() }}
-          </div>
-
-          <div class="flex justify-between items-center pt-3 border-t border-slate-100">
-            <button
-              @click="handleManualSync"
-              :disabled="isSyncing || !syncConfig.worker_url.trim()"
-              class="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
-            >
-              <Loader2 v-if="isSyncing" class="w-3.5 h-3.5 animate-spin" />
-              <RefreshCw v-else class="w-3.5 h-3.5" />
-              <span>立即双向同步</span>
-            </button>
-            <div class="flex gap-2">
-              <button
-                @click="isSyncModalOpen = false"
-                class="px-3.5 py-2 text-slate-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
-              >
-                关闭
-              </button>
-              <button
-                @click="saveSyncConfig(); isSyncModalOpen = false;"
-                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold transition cursor-pointer"
-              >
-                保存配置
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- 全局 Toast 提示 -->
 
     <!-- 弹窗：创建分类 -->
     <div
@@ -1822,46 +1789,83 @@ onMounted(async () => {
             />
           </div>
 
-          <div class="flex items-center gap-2 pt-1">
-            <input
-              id="auto-sync"
-              type="checkbox"
-              v-model="syncConfig.auto_sync"
-              class="rounded text-blue-600 focus:ring-blue-500 h-4 w-4 border-slate-300"
-            />
-            <label for="auto-sync" class="text-xs text-slate-700 cursor-pointer">
-              启动软件时自动静默双向同步
-            </label>
+          <div class="space-y-2 pt-1">
+            <div class="flex items-center gap-2">
+              <input
+                id="auto-sync"
+                type="checkbox"
+                v-model="syncConfig.auto_sync"
+                class="rounded text-blue-600 focus:ring-blue-500 h-4 w-4 border-slate-300"
+              />
+              <label for="auto-sync" class="text-xs text-slate-700 cursor-pointer">
+                启动软件时自动静默双向同步
+              </label>
+            </div>
+            <div class="flex items-center gap-2">
+              <input
+                id="sync-use-proxy"
+                type="checkbox"
+                v-model="syncConfig.use_proxy"
+                class="rounded text-blue-600 focus:ring-blue-500 h-4 w-4 border-slate-300"
+              />
+              <label for="sync-use-proxy" class="text-xs text-slate-700 cursor-pointer">
+                通过网络代理访问 Cloudflare (默认直连，仅在直连受限时开启)
+              </label>
+            </div>
           </div>
 
           <div v-if="syncConfig.last_synced_at" class="text-[11px] text-slate-400 pt-1">
             上次成功同步时间：{{ new Date(syncConfig.last_synced_at * 1000).toLocaleString() }}
           </div>
 
-          <div class="flex justify-between items-center pt-3 border-t border-slate-100">
-            <button
-              @click="handleManualSync"
-              :disabled="isSyncing || !syncConfig.worker_url.trim()"
-              class="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
-            >
-              <Loader2 v-if="isSyncing" class="w-3.5 h-3.5 animate-spin" />
-              <RefreshCw v-else class="w-3.5 h-3.5" />
-              <span>立即双向同步</span>
-            </button>
-            <div class="flex gap-2">
+          <!-- 同步操作区 -->
+          <div class="pt-3 border-t border-slate-100 space-y-2.5">
+            <div class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">同步模式</div>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button
-                @click="isSyncModalOpen = false"
-                class="px-3.5 py-2 text-slate-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+                @click="handleManualSync"
+                :disabled="isSyncing || !syncConfig.worker_url.trim()"
+                class="px-2 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition disabled:opacity-50 cursor-pointer flex items-center justify-center gap-1 shadow-xs"
+                title="比较本地与云端更新时间戳，仅增量同步变动数据（毫秒级极速）"
               >
-                关闭
+                <Loader2 v-if="isSyncing" class="w-3.5 h-3.5 animate-spin" />
+                <RefreshCw v-else class="w-3.5 h-3.5" />
+                <span>双向增量同步</span>
               </button>
               <button
-                @click="saveSyncConfig(); isSyncModalOpen = false;"
-                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold transition cursor-pointer"
+                @click="handleWipeAndPushAll"
+                :disabled="isSyncing || !syncConfig.worker_url.trim()"
+                class="px-2 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition disabled:opacity-50 cursor-pointer flex items-center justify-center gap-1 shadow-xs"
+                title="彻底清空云端数据库，并将本地全部数据完整全新灌入云端"
               >
-                保存配置
+                <Upload class="w-3.5 h-3.5" />
+                <span>全新覆盖上传</span>
+              </button>
+              <button
+                @click="handleFullPullAndOverwrite"
+                :disabled="isSyncing || !syncConfig.worker_url.trim()"
+                class="px-2 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded-lg font-medium transition disabled:opacity-50 cursor-pointer flex items-center justify-center gap-1 shadow-xs"
+                title="清空本地数据库，并以云端最新全量快照完整覆盖本地"
+              >
+                <Download class="w-3.5 h-3.5" />
+                <span>全新覆盖下载</span>
               </button>
             </div>
+          </div>
+
+          <div class="flex justify-end gap-2 pt-3 border-t border-slate-100">
+            <button
+              @click="isSyncModalOpen = false"
+              class="px-3.5 py-2 text-slate-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+            >
+              关闭
+            </button>
+            <button
+              @click="saveSyncConfig(); isSyncModalOpen = false;"
+              class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold transition cursor-pointer"
+            >
+              保存配置
+            </button>
           </div>
         </div>
       </div>

@@ -71,6 +71,9 @@ export default {
           if (method === "GET") return handleSyncPull(url, env);
           if (method === "POST") return handleSyncPush(request, env);
         }
+        if (path === "/api/wipe" && method === "POST") {
+          return handleWipe(env);
+        }
       } catch (err: any) {
         return jsonResponse({ error: err.message || "Internal Server Error" }, 500);
       }
@@ -401,6 +404,27 @@ async function handleSyncPush(request: Request, env: Env): Promise<Response> {
     server_time: now,
     message: "Sync merged successfully",
   });
+}
+
+// 清空云端所有收藏与分类数据（用于全新覆盖上传前清空远端）
+async function handleWipe(env: Env): Promise<Response> {
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM bookmark_tags"),
+      env.DB.prepare("DELETE FROM bookmarks"),
+      env.DB.prepare("DELETE FROM categories"),
+      env.DB.prepare("DELETE FROM tags"),
+      env.DB.prepare("DELETE FROM sync_meta"),
+    ]);
+    return jsonResponse({
+      success: true,
+      message: "云端数据已彻底清空",
+      server_time: now,
+    });
+  } catch (err: any) {
+    return jsonResponse({ error: `清空云端数据失败: ${err.message}` }, 500);
+  }
 }
 
 // 网页元数据抓取辅助

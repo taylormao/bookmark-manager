@@ -249,11 +249,13 @@ fn get_sync_config(state: State<'_, AppState>) -> Result<SyncConfig, String> {
     let token = state.db.get_setting("cf_sync_token").unwrap_or_default()
         .unwrap_or_else(|| "110abcd".to_string());
     let auto_sync = state.db.get_setting("cf_auto_sync").unwrap_or_default().unwrap_or_else(|| "false".to_string()) == "true";
+    let use_proxy = state.db.get_setting("cf_sync_use_proxy").unwrap_or_default().map(|v| v == "true" || v == "1").unwrap_or(false);
     let last_synced_at = state.db.get_setting("cf_last_synced_at").unwrap_or_default().and_then(|s| s.parse().ok());
     Ok(SyncConfig {
         worker_url,
         token,
         auto_sync,
+        use_proxy: Some(use_proxy),
         last_synced_at,
     })
 }
@@ -263,12 +265,23 @@ fn save_sync_config(config: SyncConfig, state: State<'_, AppState>) -> Result<()
     state.db.set_setting("cf_worker_url", &config.worker_url.trim()).map_err(|e| e.to_string())?;
     state.db.set_setting("cf_sync_token", &config.token.trim()).map_err(|e| e.to_string())?;
     state.db.set_setting("cf_auto_sync", if config.auto_sync { "true" } else { "false" }).map_err(|e| e.to_string())?;
+    state.db.set_setting("cf_sync_use_proxy", if config.use_proxy.unwrap_or(false) { "true" } else { "false" }).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 async fn sync_with_cloudflare(state: State<'_, AppState>) -> Result<SyncResult, String> {
     sync::perform_two_way_sync(&state.db).await
+}
+
+#[tauri::command]
+async fn sync_wipe_and_push_all(state: State<'_, AppState>) -> Result<SyncResult, String> {
+    sync::perform_wipe_and_push_all(&state.db).await
+}
+
+#[tauri::command]
+async fn sync_full_pull_and_overwrite(state: State<'_, AppState>) -> Result<SyncResult, String> {
+    sync::perform_full_pull_and_overwrite(&state.db).await
 }
 
 #[derive(serde::Deserialize)]
@@ -348,6 +361,8 @@ pub fn run() {
             get_sync_config,
             save_sync_config,
             sync_with_cloudflare,
+            sync_wipe_and_push_all,
+            sync_full_pull_and_overwrite,
             check_bookmarks_batch
         ])
         .run(tauri::generate_context!())
