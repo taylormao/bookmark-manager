@@ -977,13 +977,17 @@ async function handleDropToUncategorized(e: DragEvent) {
 
   try {
     const bm = bookmarks.value.find((b) => b.id === bookmarkId);
+    if (bm) {
+      bm.category_id = null;
+      bm.category_name = null;
+    }
     await invoke("set_bookmark_category", {
       id: bookmarkId,
       categoryId: null,
       category_id: null,
     });
     showToast(`已将《${bm?.title || "书签"}》移至【未分类】`);
-    await loadBookmarks();
+    await Promise.all([loadBookmarks(), loadCategories()]);
   } catch (err) {
     alert("移出分类失败: " + err);
   } finally {
@@ -998,13 +1002,17 @@ async function handleDropBookmarkToCategory(payload: {
   try {
     const bm = bookmarks.value.find((b) => b.id === payload.bookmarkId);
     const targetCat = categories.value.find((c) => c.id === payload.targetCategoryId);
+    if (bm && targetCat) {
+      bm.category_id = targetCat.id;
+      bm.category_name = targetCat.name;
+    }
     await invoke("set_bookmark_category", {
       id: payload.bookmarkId,
       categoryId: payload.targetCategoryId,
       category_id: payload.targetCategoryId,
     });
     showToast(`已将《${bm?.title || "书签"}》成功归类至【${targetCat?.name || "指定分类"}】`);
-    await loadBookmarks();
+    await Promise.all([loadBookmarks(), loadCategories()]);
   } catch (err) {
     console.error("归类失败:", err);
     alert("归类失败: " + err);
@@ -1792,8 +1800,6 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- 全局 Toast 提示 -->
-
     <!-- 弹窗：创建分类 -->
     <div
       v-if="isCategoryModalOpen"
@@ -1975,6 +1981,30 @@ onMounted(async () => {
         </div>
       </div>
     </div>
+
+    <!-- 拖拽全局实时状态浮窗 -->
+    <transition
+      enter-active-class="transform transition ease-out duration-200"
+      enter-from-class="translate-y-6 opacity-0 scale-95"
+      enter-to-class="translate-y-0 opacity-100 scale-100"
+      leave-active-class="transition ease-in duration-150"
+      leave-from-class="opacity-100 scale-100"
+      leave-to-class="translate-y-4 opacity-0 scale-95"
+    >
+      <div
+        v-if="dragManager.isDragging"
+        class="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 bg-slate-900/95 text-white px-5 py-2.5 rounded-full shadow-2xl backdrop-blur-md flex items-center gap-3 text-xs font-medium border border-blue-500/40 pointer-events-none"
+      >
+        <span v-if="dragManager.type === 'bookmark'" class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+          <span>抓取书签：<strong class="text-emerald-300">《{{ dragManager.bookmarkTitle }}》</strong> ➜ 拖至左侧分类即可归类</span>
+        </span>
+        <span v-else-if="dragManager.type === 'category'" class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-blue-400 animate-ping"></span>
+          <span>抓取分类：<strong class="text-blue-300">【{{ dragManager.categoryName }}】</strong> ➜ 拖至目标分类调整顺序或层级</span>
+        </span>
+      </div>
+    </transition>
 
     <!-- 全局 Toast 提示 -->
     <transition
