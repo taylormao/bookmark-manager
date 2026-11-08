@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import CategoryTreeItem, { type CategoryNode } from "./components/CategoryTreeItem.vue";
+import { dragManager, startDragBookmark, endDrag } from "./dragState";
 import {
   Bookmark as BookmarkIcon,
   Folder,
@@ -28,6 +29,7 @@ import {
   Loader2,
   Bot,
   FilterX,
+  GripVertical,
   Globe,
   Wifi,
   Cloud,
@@ -800,7 +802,10 @@ async function handleDropCategory(payload: {
   position: "before" | "after" | "inside";
 }) {
   const { draggedId, targetId, position } = payload;
-  if (draggedId === targetId) return;
+  if (!draggedId || !targetId || draggedId === targetId) {
+    endDrag();
+    return;
+  }
 
   try {
     if (position === "inside") {
@@ -809,6 +814,9 @@ async function handleDropCategory(payload: {
         parentId: targetId,
       });
       expandedIds.value.add(targetId);
+      const draggedCat = categories.value.find((c) => c.id === draggedId);
+      const targetCat = categories.value.find((c) => c.id === targetId);
+      showToast(`已将分类【${draggedCat?.name || "分类"}】移动至【${targetCat?.name || "目标分类"}】内部`);
     } else {
       const targetCat = categories.value.find((c) => c.id === targetId);
       if (!targetCat) return;
@@ -839,34 +847,42 @@ async function handleDropCategory(payload: {
 
       const orderedIds = siblings.map((c) => c.id);
       await invoke("reorder_categories", { orderedIds });
+      showToast("分类排序调整成功");
     }
     await loadCategories();
   } catch (err) {
     alert("调整分类层级/顺序失败: " + err);
+  } finally {
+    endDrag();
   }
 }
 
 async function handleDropToRoot(e: DragEvent) {
   isCategoryDragOverRoot.value = false;
   e.preventDefault();
-  const catIdStr = e.dataTransfer?.getData("text/category-id");
-  if (!catIdStr) return;
-  const id = parseInt(catIdStr, 10);
-  if (isNaN(id)) return;
+  const id = dragManager.categoryId || parseInt(e.dataTransfer?.getData("text/category-id") || "", 10);
+  if (!id || isNaN(id)) {
+    endDrag();
+    return;
+  }
 
   try {
+    const cat = categories.value.find((c) => c.id === id);
     await invoke("update_category_parent", { id, parentId: null });
+    showToast(`已将分类【${cat?.name || "分类"}】提升为根目录`);
     await loadCategories();
   } catch (err) {
     alert("提升为根分类失败: " + err);
+  } finally {
+    endDrag();
   }
 }
 
 function handleDragOverRoot(e: DragEvent) {
-  if (e.dataTransfer?.types.includes("text/category-id")) {
+  if (dragManager.type === "category" || e.dataTransfer?.types.includes("text/category-id")) {
     e.preventDefault();
     isCategoryDragOverRoot.value = true;
-    e.dataTransfer.dropEffect = "move";
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
   }
 }
 
@@ -887,39 +903,38 @@ function showToast(msg: string) {
 }
 
 // 书签卡片拖拽交互
-const isDraggingBookmark = ref(false);
-const draggedBookmarkId = ref<number | null>(null);
 const isDragOverUncategorized = ref(false);
 
 function handleBookmarkDragStart(bm: Bookmark, e: DragEvent) {
-  if (!e.dataTransfer) return;
-  isDraggingBookmark.value = true;
-  draggedBookmarkId.value = bm.id;
-  e.dataTransfer.setData("text/bookmark-id", String(bm.id));
-  e.dataTransfer.setData("text/plain", bm.title);
-  e.dataTransfer.effectAllowed = "move";
+  startDragBookmark(bm.id, bm.title);
+  if (e.dataTransfer) {
+    e.dataTransfer.setData("text/plain", `bookmark:${bm.id}`);
+    e.dataTransfer.setData("text/bookmark-id", String(bm.id));
+    e.dataTransfer.effectAllowed = "move";
+  }
 }
 
 function handleBookmarkDragEnd() {
-  isDraggingBookmark.value = false;
-  draggedBookmarkId.value = null;
+  endDrag();
+  isDragOverUncategorized.value = false;
 }
 
 function handleDragOverUncategorized(e: DragEvent) {
-  if (e.dataTransfer?.types.includes("text/bookmark-id")) {
+  if (dragManager.type === "bookmark" || e.dataTransfer?.types.includes("text/bookmark-id")) {
     e.preventDefault();
     isDragOverUncategorized.value = true;
-    e.dataTransfer.dropEffect = "move";
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
   }
 }
 
 async function handleDropToUncategorized(e: DragEvent) {
   e.preventDefault();
   isDragOverUncategorized.value = false;
-  const bmIdStr = e.dataTransfer?.getData("text/bookmark-id");
-  if (!bmIdStr) return;
-  const bookmarkId = parseInt(bmIdStr, 10);
-  if (isNaN(bookmarkId)) return;
+  const bookmarkId = dragManager.bookmarkId || parseInt(e.dataTransfer?.getData("text/bookmark-id") || "", 10);
+  if (!bookmarkId || isNaN(bookmarkId)) {
+    endDrag();
+    return;
+  }
 
   try {
     const bm = bookmarks.value.find((b) => b.id === bookmarkId);
@@ -928,6 +943,8 @@ async function handleDropToUncategorized(e: DragEvent) {
     await loadBookmarks();
   } catch (err) {
     alert("移出分类失败: " + err);
+  } finally {
+    endDrag();
   }
 }
 
@@ -947,6 +964,8 @@ async function handleDropBookmarkToCategory(payload: {
   } catch (err) {
     console.error("归类失败:", err);
     alert("归类失败: " + err);
+  } finally {
+    endDrag();
   }
 }
 
@@ -1066,8 +1085,8 @@ onMounted(async () => {
       <!-- 分类树 -->
       <div class="flex-1 overflow-y-auto p-3">
         <div class="flex items-center justify-between px-2 mb-2 text-xs font-semibold uppercase tracking-wider">
-          <span :class="isDraggingBookmark ? 'text-emerald-600 font-bold animate-pulse' : 'text-slate-400'">
-            {{ isDraggingBookmark ? '👇 拖放到分类快速归类' : '书签分类' }}
+          <span :class="dragManager.type === 'bookmark' ? 'text-emerald-600 font-bold animate-pulse' : 'text-slate-400'">
+            {{ dragManager.type === 'bookmark' ? '👇 拖放到分类快速归类' : '书签分类' }}
           </span>
           <button @click="openCreateCategoryModal(null)" class="p-1 hover:text-blue-600 rounded transition cursor-pointer" title="新建根分类">
             <FolderPlus class="w-4 h-4" />
@@ -1351,21 +1370,25 @@ onMounted(async () => {
             @dragend="handleBookmarkDragEnd"
             class="group bg-white rounded-xl border p-4 shadow-xs hover:shadow-md transition-all flex flex-col justify-between cursor-grab active:cursor-grabbing select-none"
             :class="[
-              draggedBookmarkId === bm.id
+              dragManager.bookmarkId === bm.id
                 ? 'opacity-40 border-dashed !border-blue-500 scale-[0.98]'
                 : 'border-slate-200/80 hover:border-blue-400/80',
             ]"
           >
             <div>
               <!-- 头部：Favicon 图标 + 标题 + 状态 -->
-              <div class="flex items-start justify-between gap-2.5 mb-2">
-                <div class="flex items-start gap-2.5 flex-1 min-w-0">
+              <div class="flex items-start justify-between gap-2 mb-2">
+                <div class="flex items-start gap-2 flex-1 min-w-0">
+                  <div class="cursor-grab active:cursor-grabbing text-slate-300 group-hover:text-slate-500 mt-1 shrink-0 p-0.5" title="按住拖拽至左侧分类快速归类">
+                    <GripVertical class="w-3.5 h-3.5" />
+                  </div>
                   <div class="w-5 h-5 mt-0.5 shrink-0 rounded flex items-center justify-center bg-slate-100 overflow-hidden">
                     <img
                       v-if="bm.icon_data_url"
                       :src="bm.icon_data_url"
                       class="w-full h-full object-contain"
                       alt="favicon"
+                      draggable="false"
                       @error="bm.icon_data_url = null"
                     />
                     <Globe v-else class="w-3.5 h-3.5 text-slate-400" />

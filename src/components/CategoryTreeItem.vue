@@ -10,6 +10,7 @@ import {
   Plus,
   GripVertical,
 } from "@lucide/vue";
+import { dragManager, startDragCategory, endDrag } from "../dragState";
 
 export interface CategoryNode {
   id: number;
@@ -80,28 +81,38 @@ const dragOverPosition = ref<"before" | "after" | "inside" | null>(null);
 const isBookmarkOver = ref(false);
 
 function handleDragStart(e: DragEvent) {
-  if (!e.dataTransfer) return;
-  e.dataTransfer.setData("text/category-id", String(props.node.id));
-  e.dataTransfer.effectAllowed = "move";
-  // 设置拖动透明度或类
-  e.dataTransfer.setData("text/plain", props.node.name);
+  startDragCategory(props.node.id, props.node.name);
+  if (e.dataTransfer) {
+    e.dataTransfer.setData("text/plain", `category:${props.node.id}`);
+    e.dataTransfer.setData("text/category-id", String(props.node.id));
+    e.dataTransfer.effectAllowed = "move";
+  }
+}
+
+function handleDragEnd() {
+  endDrag();
+  dragOverPosition.value = null;
+  isBookmarkOver.value = false;
 }
 
 function handleDragOver(e: DragEvent) {
   e.preventDefault();
-  if (!e.dataTransfer) return;
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = "move";
+  }
 
-  const isBookmark = e.dataTransfer.types.includes("text/bookmark-id");
-  const isCategory = e.dataTransfer.types.includes("text/category-id");
-
-  if (isBookmark) {
+  // 1. 判断是否拖拽书签
+  if (dragManager.type === "bookmark" || e.dataTransfer?.types.includes("text/bookmark-id")) {
     isBookmarkOver.value = true;
     dragOverPosition.value = "inside";
-    e.dataTransfer.dropEffect = "move";
     return;
   }
 
-  if (isCategory) {
+  // 2. 判断是否拖拽分类
+  if (dragManager.type === "category" || e.dataTransfer?.types.includes("text/category-id")) {
+    const draggedId = dragManager.categoryId;
+    if (draggedId === props.node.id) return; // 无法拖放到自身
+
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const offsetY = e.clientY - rect.top;
     const ratio = offsetY / rect.height;
@@ -113,11 +124,14 @@ function handleDragOver(e: DragEvent) {
     } else {
       dragOverPosition.value = "inside";
     }
-    e.dataTransfer.dropEffect = "move";
   }
 }
 
-function handleDragLeave() {
+function handleDragLeave(e: DragEvent) {
+  // 关键防抖：如果依然在当前行子节点内移动，不清除高亮
+  if (e.currentTarget && e.relatedTarget && (e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) {
+    return;
+  }
   dragOverPosition.value = null;
   isBookmarkOver.value = false;
 }
@@ -125,32 +139,32 @@ function handleDragLeave() {
 function handleDrop(e: DragEvent) {
   e.preventDefault();
   e.stopPropagation();
-  if (!e.dataTransfer) return;
 
-  const catIdStr = e.dataTransfer.getData("text/category-id");
-  const bmIdStr = e.dataTransfer.getData("text/bookmark-id");
-  const position = dragOverPosition.value;
+  const isBookmark = dragManager.type === "bookmark" || !!e.dataTransfer?.getData("text/bookmark-id");
+  const position = dragOverPosition.value || "inside";
   dragOverPosition.value = null;
   isBookmarkOver.value = false;
 
-  if (bmIdStr) {
-    const bookmarkId = parseInt(bmIdStr, 10);
-    if (!isNaN(bookmarkId)) {
+  // 1. 处理书签拖放归类
+  if (isBookmark) {
+    const bookmarkId = dragManager.bookmarkId || parseInt(e.dataTransfer?.getData("text/bookmark-id") || "", 10);
+    if (bookmarkId && !isNaN(bookmarkId)) {
       emit("dropBookmark", { bookmarkId, targetCategoryId: props.node.id });
     }
+    endDrag();
     return;
   }
 
-  if (catIdStr && position) {
-    const draggedId = parseInt(catIdStr, 10);
-    if (!isNaN(draggedId) && draggedId !== props.node.id) {
-      emit("dropCategory", {
-        draggedId,
-        targetId: props.node.id,
-        position,
-      });
-    }
+  // 2. 处理分类排序与层级调整
+  const draggedCatId = dragManager.categoryId || parseInt(e.dataTransfer?.getData("text/category-id") || "", 10);
+  if (draggedCatId && !isNaN(draggedCatId) && draggedCatId !== props.node.id) {
+    emit("dropCategory", {
+      draggedId: draggedCatId,
+      targetId: props.node.id,
+      position,
+    });
   }
+  endDrag();
 }
 </script>
 
@@ -173,6 +187,7 @@ function handleDrop(e: DragEvent) {
       :style="{ paddingLeft: `${currentLevel * 14 + 8}px` }"
       draggable="true"
       @dragstart="handleDragStart"
+      @dragend="handleDragEnd"
       @dragover="handleDragOver"
       @dragleave="handleDragLeave"
       @drop="handleDrop"
