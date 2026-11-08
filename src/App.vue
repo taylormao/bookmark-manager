@@ -944,7 +944,12 @@ function handleBookmarkDragEnd() {
 }
 
 function handleDragOverUncategorized(e: DragEvent) {
-  if (dragManager.type === "bookmark" || e.dataTransfer?.types.includes("text/bookmark-id")) {
+  const isBm =
+    dragManager.type === "bookmark" ||
+    (typeof window !== "undefined" && (window as any).__dragBookmarkId != null) ||
+    e.dataTransfer?.types.includes("text/bookmark-id");
+
+  if (isBm) {
     e.preventDefault();
     isDragOverUncategorized.value = true;
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
@@ -954,7 +959,17 @@ function handleDragOverUncategorized(e: DragEvent) {
 async function handleDropToUncategorized(e: DragEvent) {
   e.preventDefault();
   isDragOverUncategorized.value = false;
-  const bookmarkId = dragManager.bookmarkId || parseInt(e.dataTransfer?.getData("text/bookmark-id") || "", 10);
+  const rawText = e.dataTransfer?.getData("text/plain") || "";
+  let bookmarkId =
+    dragManager.bookmarkId ||
+    (typeof window !== "undefined" ? (window as any).__dragBookmarkId : null);
+  if (!bookmarkId && rawText.startsWith("bookmark:")) {
+    bookmarkId = parseInt(rawText.replace("bookmark:", ""), 10);
+  }
+  if (!bookmarkId && e.dataTransfer) {
+    const rawBmId = e.dataTransfer.getData("text/bookmark-id");
+    if (rawBmId) bookmarkId = parseInt(rawBmId, 10);
+  }
   if (!bookmarkId || isNaN(bookmarkId)) {
     endDrag();
     return;

@@ -25,6 +25,11 @@ export function startDragBookmark(id: number, title: string) {
   dragManager.bookmarkTitle = title;
   dragManager.categoryId = null;
   dragManager.categoryName = "";
+  if (typeof window !== "undefined") {
+    (window as any).__dragBookmarkId = id;
+    (window as any).__dragBookmarkTitle = title;
+    delete (window as any).__dragCategoryId;
+  }
 }
 
 export function startDragCategory(id: number, name: string) {
@@ -34,6 +39,11 @@ export function startDragCategory(id: number, name: string) {
   dragManager.categoryName = name;
   dragManager.bookmarkId = null;
   dragManager.bookmarkTitle = "";
+  if (typeof window !== "undefined") {
+    (window as any).__dragCategoryId = id;
+    (window as any).__dragCategoryName = name;
+    delete (window as any).__dragBookmarkId;
+  }
 }
 
 export function endDrag() {
@@ -43,5 +53,11 @@ export function endDrag() {
   dragManager.bookmarkTitle = "";
   dragManager.categoryId = null;
   dragManager.categoryName = "";
+  if (typeof window !== "undefined") {
+    delete (window as any).__dragBookmarkId;
+    delete (window as any).__dragBookmarkTitle;
+    delete (window as any).__dragCategoryId;
+    delete (window as any).__dragCategoryName;
+  }
 }
 
