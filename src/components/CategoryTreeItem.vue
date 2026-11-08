@@ -81,6 +81,7 @@ const dragOverPosition = ref<"before" | "after" | "inside" | null>(null);
 const isBookmarkOver = ref(false);
 
 function handleDragStart(e: DragEvent) {
+  e.stopPropagation();
   startDragCategory(props.node.id, props.node.name);
   if (e.dataTransfer) {
     e.dataTransfer.setData("text/plain", `category:${props.node.id}`);
@@ -89,7 +90,8 @@ function handleDragStart(e: DragEvent) {
   }
 }
 
-function handleDragEnd() {
+function handleDragEnd(e: DragEvent) {
+  e.stopPropagation();
   endDrag();
   dragOverPosition.value = null;
   isBookmarkOver.value = false;
@@ -97,6 +99,7 @@ function handleDragEnd() {
 
 function handleDragOver(e: DragEvent) {
   e.preventDefault();
+  e.stopPropagation();
   if (e.dataTransfer) {
     e.dataTransfer.dropEffect = "move";
   }
@@ -128,6 +131,7 @@ function handleDragOver(e: DragEvent) {
 }
 
 function handleDragLeave(e: DragEvent) {
+  e.stopPropagation();
   // 关键防抖：如果依然在当前行子节点内移动，不清除高亮
   if (e.currentTarget && e.relatedTarget && (e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) {
     return;
@@ -260,7 +264,7 @@ function handleDrop(e: DragEvent) {
           <!-- 书签拖拽悬浮提示徽章 -->
           <span
             v-if="isBookmarkOver"
-            class="ml-auto text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-medium shrink-0 shadow-xs"
+            class="ml-auto text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-medium shrink-0 shadow-xs pointer-events-none select-none"
           >
             放开归类
           </span>

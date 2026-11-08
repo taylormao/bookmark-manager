@@ -775,7 +775,11 @@ async function submitCategory() {
   const name = newCategoryName.value.trim();
   if (!name) return;
   try {
-    await invoke("create_category", { name, parent_id: newCategoryParentId.value });
+    await invoke("create_category", {
+      name,
+      parentId: newCategoryParentId.value,
+      parent_id: newCategoryParentId.value,
+    });
     if (newCategoryParentId.value !== null) {
       expandedIds.value.add(newCategoryParentId.value);
     }
@@ -827,6 +831,7 @@ async function handleDropCategory(payload: {
       await invoke("update_category_parent", {
         id: draggedId,
         parentId: targetId,
+        parent_id: targetId,
       });
       expandedIds.value.add(targetId);
       const draggedCat = categories.value.find((c) => c.id === draggedId);
@@ -842,6 +847,7 @@ async function handleDropCategory(payload: {
         await invoke("update_category_parent", {
           id: draggedId,
           parentId: parentId ?? null,
+          parent_id: parentId ?? null,
         });
       }
 
@@ -861,7 +867,10 @@ async function handleDropCategory(payload: {
       siblings.splice(insertIndex, 0, { id: draggedId } as any);
 
       const orderedIds = siblings.map((c) => c.id);
-      await invoke("reorder_categories", { orderedIds });
+      await invoke("reorder_categories", {
+        orderedIds,
+        ordered_ids: orderedIds,
+      });
       showToast("分类排序调整成功");
     }
     await loadCategories();
@@ -953,7 +962,11 @@ async function handleDropToUncategorized(e: DragEvent) {
 
   try {
     const bm = bookmarks.value.find((b) => b.id === bookmarkId);
-    await invoke("set_bookmark_category", { id: bookmarkId, category_id: null });
+    await invoke("set_bookmark_category", {
+      id: bookmarkId,
+      categoryId: null,
+      category_id: null,
+    });
     showToast(`已将《${bm?.title || "书签"}》移至【未分类】`);
     await loadBookmarks();
   } catch (err) {
@@ -972,6 +985,7 @@ async function handleDropBookmarkToCategory(payload: {
     const targetCat = categories.value.find((c) => c.id === payload.targetCategoryId);
     await invoke("set_bookmark_category", {
       id: payload.bookmarkId,
+      categoryId: payload.targetCategoryId,
       category_id: payload.targetCategoryId,
     });
     showToast(`已将《${bm?.title || "书签"}》成功归类至【${targetCat?.name || "指定分类"}】`);
