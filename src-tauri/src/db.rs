@@ -89,6 +89,8 @@ impl Database {
         let _ = conn.execute("ALTER TABLE categories ADD COLUMN updated_at INTEGER DEFAULT 0;", []);
         let _ = conn.execute("ALTER TABLE categories ADD COLUMN is_deleted INTEGER DEFAULT 0;", []);
         let _ = conn.execute("ALTER TABLE bookmarks ADD COLUMN is_deleted INTEGER DEFAULT 0;", []);
+        // 规范化所有存量 url_key（去除末尾多余斜杠，统一规范化基准）
+        let _ = conn.execute("UPDATE bookmarks SET url_key = rtrim(url_key, '/') WHERE url_key LIKE '%/';", []);
 
         Ok(())
     }
@@ -483,8 +485,9 @@ impl Database {
     pub fn find_duplicates(&self) -> Result<Vec<Vec<Bookmark>>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT url_key FROM bookmarks
-             GROUP BY url_key
+            "SELECT rtrim(url_key, '/') as norm_key FROM bookmarks
+             WHERE coalesce(is_deleted, 0) = 0
+             GROUP BY norm_key
              HAVING count(*) > 1"
         )?;
         let url_keys = stmt
@@ -498,8 +501,8 @@ impl Database {
                         b.valid, b.status_code, b.last_checked_at, b.check_note, b.created_at, b.updated_at
                  FROM bookmarks b
                  LEFT JOIN categories c ON b.category_id = c.id
-                 WHERE b.url_key = ?1
-                 ORDER BY b.created_at ASC"
+                 WHERE coalesce(b.is_deleted, 0) = 0 AND rtrim(b.url_key, '/') = ?1
+                 ORDER BY b.created_at ASC, b.id ASC"
             )?;
             let bms = bm_stmt
                 .query_map(params![key], |row| {
@@ -522,7 +525,9 @@ impl Database {
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
 
-            groups.push(bms);
+            if bms.len() > 1 {
+                groups.push(bms);
+            }
         }
 
         Ok(groups)
@@ -621,14 +626,35 @@ impl Database {
             }
 
             let url_key = normalize_url(&item.url).unwrap_or_else(|_| item.url.clone());
+            let norm_key = url_key.trim_end_matches('/').to_string();
             let created_at = item.add_date.unwrap_or(now);
 
-            tx.execute(
-                "INSERT INTO bookmarks (title, url, url_key, icon, category_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![item.title, item.url, url_key, item.icon, parent_id, created_at, now],
-            )?;
-            let bm_id = tx.last_insert_rowid();
+            let existing_id: Result<i64, _> = tx.query_row(
+                "SELECT id FROM bookmarks WHERE rtrim(url_key, '/') = ?1",
+                params![norm_key],
+                |r| r.get(0),
+            );
+
+            let bm_id = match existing_id {
+                Ok(id) => {
+                    if parent_id.is_some() {
+                        let _ = tx.execute(
+                            "UPDATE bookmarks SET category_id = coalesce(category_id, ?1) WHERE id = ?2 AND category_id IS NULL",
+                            params![parent_id, id],
+                        );
+                    }
+                    id
+                }
+                Err(_) => {
+                    tx.execute(
+                        "INSERT INTO bookmarks (title, url, url_key, icon, category_id, created_at, updated_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        params![item.title, item.url, norm_key, item.icon, parent_id, created_at, now],
+                    )?;
+                    count += 1;
+                    tx.last_insert_rowid()
+                }
+            };
 
             for tag in &item.tags {
                 let tag = tag.trim();

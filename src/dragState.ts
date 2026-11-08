@@ -44,3 +44,4 @@ export function endDrag() {
   dragManager.categoryId = null;
   dragManager.categoryName = "";
 }
+
