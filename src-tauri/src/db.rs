@@ -683,11 +683,11 @@ impl Database {
     ) -> Result<(Vec<crate::sync::CloudCategory>, Vec<crate::sync::CloudBookmark>)> {
         let conn = self.conn.lock().unwrap();
 
-        // 1. 获取变更分类 (since 为 0 时同步全部历史分类)
+        // 1. 获取变更分类 (since 为 0 全量推送时仅推送未删除分类；since > 0 时推送增量包括软删除)
         let mut cat_stmt = conn.prepare(
             "SELECT id, name, parent_id, sort_order, coalesce(updated_at, 0), coalesce(is_deleted, 0)
              FROM categories
-             WHERE (?1 = 0) OR (coalesce(updated_at, 0) > ?1)",
+             WHERE (?1 = 0 AND coalesce(is_deleted, 0) = 0) OR (?1 > 0 AND coalesce(updated_at, 0) > ?1)",
         )?;
         let cat_rows = cat_stmt.query_map(params![since], |row| {
             Ok(crate::sync::CloudCategory {
@@ -704,13 +704,13 @@ impl Database {
             cats.push(c?);
         }
 
-        // 2. 获取变更书签
+        // 2. 获取变更书签 (since 为 0 全量推送时仅推送未删除书签；since > 0 时推送增量包括软删除)
         let mut bm_stmt = conn.prepare(
             "SELECT b.id, b.title, b.url, b.url_key, b.icon, b.category_id,
-                    c.name as category_name, b.valid, b.created_at, b.updated_at, coalesce(b.is_deleted, 0)
+                    c.name as category_name, b.valid, b.created_at, coalesce(b.updated_at, 0), coalesce(b.is_deleted, 0)
              FROM bookmarks b
              LEFT JOIN categories c ON b.category_id = c.id
-             WHERE b.updated_at > ?1",
+             WHERE (?1 = 0 AND coalesce(b.is_deleted, 0) = 0) OR (?1 > 0 AND coalesce(b.updated_at, 0) > ?1)",
         )?;
         let bm_rows = bm_stmt.query_map(params![since], |row| {
             Ok((
