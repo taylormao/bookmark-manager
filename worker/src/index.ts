@@ -284,7 +284,10 @@ async function handleSyncPull(url: URL, env: Env): Promise<Response> {
   const now = Math.floor(Date.now() / 1000);
 
   const categories = await env.DB.prepare(
-    "SELECT id, uuid, name, parent_id, sort_order, updated_at, is_deleted FROM categories WHERE updated_at > ?"
+    `SELECT c1.id, c1.uuid, c1.name, c1.parent_id, c2.name as parent_name, c1.sort_order, c1.updated_at, c1.is_deleted
+     FROM categories c1
+     LEFT JOIN categories c2 ON c1.parent_id = c2.id
+     WHERE c1.updated_at > ?`
   ).bind(since).all();
 
   const bookmarks = await env.DB.prepare(
@@ -353,9 +356,18 @@ async function handleSyncPush(request: Request, env: Env): Promise<Response> {
           if (ec.name) existingCatMap.set(ec.name.toLowerCase(), { id: ec.id, updated_at: ec.updated_at });
         }
 
+        // 建立客户端 local id -> local name 映射，用于解算本地 parent_id
+        const localIdToName = new Map<number, string>();
+        for (const c of clientCategories) {
+          if (c.id != null && c.name) {
+            localIdToName.set(c.id, c.name.toLowerCase());
+          }
+        }
+
         const catStmts: any[] = [];
         const processedNames = new Set<string>();
 
+        // 阶段一：先写入/更新分类基础数据，parent_id 暂时全部设为 NULL，彻底避免外键约束异常
         for (const c of clientCategories) {
           if (!c.name) continue;
           const lowerName = c.name.toLowerCase();
@@ -366,20 +378,51 @@ async function handleSyncPush(request: Request, env: Env): Promise<Response> {
           if (!ex) {
             catStmts.push(
               env.DB.prepare(
-                "INSERT INTO categories (name, parent_id, sort_order, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?)"
-              ).bind(c.name, c.parent_id || null, c.sort_order || 0, c.updated_at || now, c.is_deleted ? 1 : 0)
+                "INSERT INTO categories (name, parent_id, sort_order, updated_at, is_deleted) VALUES (?, NULL, ?, ?, ?)"
+              ).bind(c.name, c.sort_order || 0, c.updated_at || now, c.is_deleted ? 1 : 0)
             );
           } else if ((c.updated_at || 0) > ex.updated_at) {
             catStmts.push(
               env.DB.prepare(
-                "UPDATE categories SET parent_id = ?, sort_order = ?, updated_at = ?, is_deleted = ? WHERE id = ?"
-              ).bind(c.parent_id || null, c.sort_order || 0, c.updated_at || now, c.is_deleted ? 1 : 0, ex.id)
+                "UPDATE categories SET sort_order = ?, updated_at = ?, is_deleted = ? WHERE id = ?"
+              ).bind(c.sort_order || 0, c.updated_at || now, c.is_deleted ? 1 : 0, ex.id)
             );
           }
         }
 
         if (catStmts.length > 0) {
           await env.DB.batch(catStmts);
+        }
+
+        // 阶段二：所有分类均已安全入库后，查出所有分类的远端真实 id，建立远程分类层级关联
+        const allRemoteCats = await env.DB.prepare("SELECT id, name FROM categories WHERE is_deleted = 0").all<any>();
+        const remoteCatNameToId = new Map<string, number>();
+        for (const rc of (allRemoteCats.results || [])) {
+          if (rc.name) remoteCatNameToId.set(rc.name.toLowerCase(), rc.id);
+        }
+
+        const parentUpdateStmts: any[] = [];
+        for (const c of clientCategories) {
+          if (!c.name) continue;
+          const currentRemoteId = remoteCatNameToId.get(c.name.toLowerCase());
+          if (!currentRemoteId) continue;
+
+          let targetParentRemoteId: number | null = null;
+          // 优先使用显式传参 parent_name，次选 localIdToName 转换
+          const parentName = c.parent_name || (c.parent_id != null ? localIdToName.get(c.parent_id) : null);
+          if (parentName) {
+            targetParentRemoteId = remoteCatNameToId.get(parentName.toLowerCase()) || null;
+          }
+
+          if (targetParentRemoteId !== null) {
+            parentUpdateStmts.push(
+              env.DB.prepare("UPDATE categories SET parent_id = ? WHERE id = ?").bind(targetParentRemoteId, currentRemoteId)
+            );
+          }
+        }
+
+        if (parentUpdateStmts.length > 0) {
+          await env.DB.batch(parentUpdateStmts);
         }
       }
     }

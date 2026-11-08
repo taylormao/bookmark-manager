@@ -685,18 +685,20 @@ impl Database {
 
         // 1. 获取变更分类 (since 为 0 全量推送时仅推送未删除分类；since > 0 时推送增量包括软删除)
         let mut cat_stmt = conn.prepare(
-            "SELECT id, name, parent_id, sort_order, coalesce(updated_at, 0), coalesce(is_deleted, 0)
-             FROM categories
-             WHERE (?1 = 0 AND coalesce(is_deleted, 0) = 0) OR (?1 > 0 AND coalesce(updated_at, 0) > ?1)",
+            "SELECT c1.id, c1.name, c1.parent_id, c2.name as parent_name, c1.sort_order, coalesce(c1.updated_at, 0), coalesce(c1.is_deleted, 0)
+             FROM categories c1
+             LEFT JOIN categories c2 ON c1.parent_id = c2.id
+             WHERE (?1 = 0 AND coalesce(c1.is_deleted, 0) = 0) OR (?1 > 0 AND coalesce(c1.updated_at, 0) > ?1)",
         )?;
         let cat_rows = cat_stmt.query_map(params![since], |row| {
             Ok(crate::sync::CloudCategory {
                 id: Some(row.get(0)?),
                 name: row.get(1)?,
                 parent_id: row.get(2)?,
-                sort_order: Some(row.get(3)?),
-                updated_at: row.get(4)?,
-                is_deleted: Some(row.get(5)?),
+                parent_name: row.get(3)?,
+                sort_order: Some(row.get(4)?),
+                updated_at: row.get(5)?,
+                is_deleted: Some(row.get(6)?),
             })
         })?;
         let mut cats = Vec::new();
@@ -760,7 +762,8 @@ impl Database {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
 
-        // 1. 合并分类
+        // 1. 合并分类（两阶段合并，彻底规避外键约束异常）
+        // 阶段一：写入/更新分类基础数据
         for cat in categories {
             let is_del = cat.is_deleted.unwrap_or(0) == 1;
             let existing_id: Option<(i64, i64)> = tx
@@ -788,14 +791,35 @@ impl Database {
             } else {
                 tx.execute(
                     "INSERT INTO categories (name, parent_id, sort_order, updated_at, is_deleted)
-                     VALUES (?1, ?2, ?3, ?4, 0)",
+                     VALUES (?1, NULL, ?2, ?3, 0)",
                     params![
                         cat.name,
-                        cat.parent_id,
                         cat.sort_order.unwrap_or(0),
                         cat.updated_at
                     ],
                 )?;
+            }
+        }
+
+        // 阶段二：安全回填分类父级层级关系
+        for cat in categories {
+            if cat.is_deleted.unwrap_or(0) == 1 {
+                continue;
+            }
+            if let Some(ref pname) = cat.parent_name {
+                let target_parent_id: Option<i64> = tx
+                    .query_row(
+                        "SELECT id FROM categories WHERE name = ?1 COLLATE NOCASE AND is_deleted = 0",
+                        params![pname],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if let Some(pid) = target_parent_id {
+                    tx.execute(
+                        "UPDATE categories SET parent_id = ?1 WHERE name = ?2 COLLATE NOCASE",
+                        params![pid, cat.name],
+                    )?;
+                }
             }
         }
 
@@ -916,21 +940,41 @@ impl Database {
         tx.execute("DELETE FROM categories", [])?;
         tx.execute("DELETE FROM tags", [])?;
 
-        // 1. 写入所有非删除分类
+        // 1. 写入所有非删除分类（两阶段插入，先置空 parent_id 杜绝外键错误，再按名称回填）
         for cat in categories {
             if cat.is_deleted.unwrap_or(0) == 1 {
                 continue;
             }
             tx.execute(
                 "INSERT INTO categories (name, parent_id, sort_order, updated_at, is_deleted)
-                 VALUES (?1, ?2, ?3, ?4, 0)",
+                 VALUES (?1, NULL, ?2, ?3, 0)",
                 params![
                     cat.name,
-                    cat.parent_id,
                     cat.sort_order.unwrap_or(0),
                     cat.updated_at
                 ],
             )?;
+        }
+
+        for cat in categories {
+            if cat.is_deleted.unwrap_or(0) == 1 {
+                continue;
+            }
+            if let Some(ref pname) = cat.parent_name {
+                let pid: Option<i64> = tx
+                    .query_row(
+                        "SELECT id FROM categories WHERE name = ?1 COLLATE NOCASE",
+                        params![pname],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if let Some(pid) = pid {
+                    tx.execute(
+                        "UPDATE categories SET parent_id = ?1 WHERE name = ?2 COLLATE NOCASE",
+                        params![pid, cat.name],
+                    )?;
+                }
+            }
         }
 
         // 2. 写入所有非删除书签
@@ -1191,6 +1235,7 @@ mod tests {
             id: None,
             name: "云端分类".to_string(),
             parent_id: None,
+            parent_name: None,
             sort_order: Some(0),
             updated_at: 1000,
             is_deleted: Some(0),

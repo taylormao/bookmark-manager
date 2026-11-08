@@ -7,6 +7,7 @@ pub struct CloudCategory {
     pub id: Option<i64>,
     pub name: String,
     pub parent_id: Option<i64>,
+    pub parent_name: Option<String>,
     pub sort_order: Option<i64>,
     pub updated_at: i64,
     pub is_deleted: Option<i64>,
