@@ -165,35 +165,56 @@ async function handleGetBookmarks(url: URL, env: Env): Promise<Response> {
   const search = url.searchParams.get("search");
   const categoryId = url.searchParams.get("category_id");
   const tag = url.searchParams.get("tag");
+  const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+  const pageSize = Math.min(Math.max(parseInt(url.searchParams.get("limit") || url.searchParams.get("page_size") || "60", 10), 1), 500);
+  const isPaginated = url.searchParams.has("page") || url.searchParams.get("format") === "paginated";
 
+  let where = "WHERE b.is_deleted = 0";
+  const params: any[] = [];
+
+  if (search) {
+    where += " AND (b.title LIKE ? OR b.url LIKE ?)";
+    params.push(`%${search}%`, `%${search}%`);
+  }
+  if (categoryId !== null && categoryId !== undefined && categoryId !== "") {
+    if (categoryId === "-1") {
+      where += " AND b.category_id IS NULL";
+    } else {
+      where += " AND b.category_id = ?";
+      params.push(parseInt(categoryId, 10));
+    }
+  }
+
+  // 1. 获取满足当前筛选条件的总书签数（动态准确统计）
+  const countStmt = env.DB.prepare(`SELECT COUNT(*) as total FROM bookmarks b ${where}`);
+  const countRow = await (params.length ? countStmt.bind(...params) : countStmt).first<any>();
+  const total = countRow?.total || 0;
+
+  // 2. 分页查询书签列表
+  const offset = (page - 1) * pageSize;
+  const listParams = [...params];
   let query = `
     SELECT b.id, b.uuid, b.title, b.url, b.url_key, b.icon, b.category_id,
            c.name as category_name, b.valid, b.created_at, b.updated_at
     FROM bookmarks b
     LEFT JOIN categories c ON b.category_id = c.id
-    WHERE b.is_deleted = 0
+    ${where}
+    ORDER BY b.created_at DESC
   `;
-  const params: any[] = [];
 
-  if (search) {
-    query += " AND (b.title LIKE ? OR b.url LIKE ?)";
-    params.push(`%${search}%`, `%${search}%`);
-  }
-  if (categoryId !== null && categoryId !== undefined && categoryId !== "") {
-    if (categoryId === "-1") {
-      query += " AND b.category_id IS NULL";
-    } else {
-      query += " AND b.category_id = ?";
-      params.push(parseInt(categoryId, 10));
-    }
+  if (isPaginated) {
+    query += " LIMIT ? OFFSET ?";
+    listParams.push(pageSize, offset);
+  } else {
+    // 兼容扩展插件一次性检索（限制上限 3000）
+    query += " LIMIT 3000";
   }
 
-  query += " ORDER BY b.created_at DESC LIMIT 500";
   const stmt = env.DB.prepare(query);
-  const rows = await (params.length ? stmt.bind(...params) : stmt).all();
+  const rows = await (listParams.length ? stmt.bind(...listParams) : stmt).all();
+  const bookmarks = (rows.results || []) as any[];
 
   // 附带标签
-  const bookmarks = rows.results;
   if (bookmarks.length > 0) {
     const ids = bookmarks.map((b: any) => b.id).join(",");
     const tagRows = await env.DB.prepare(
@@ -201,14 +222,24 @@ async function handleGetBookmarks(url: URL, env: Env): Promise<Response> {
     ).all();
 
     const tagMap = new Map<number, string[]>();
-    for (const r of tagRows.results as any[]) {
+    for (const r of (tagRows.results || []) as any[]) {
       if (!tagMap.has(r.bookmark_id)) tagMap.set(r.bookmark_id, []);
       tagMap.get(r.bookmark_id)!.push(r.name);
     }
 
-    for (const b of bookmarks as any[]) {
+    for (const b of bookmarks) {
       b.tags = tagMap.get(b.id) || [];
     }
+  }
+
+  if (isPaginated) {
+    return jsonResponse({
+      total,
+      page,
+      page_size: pageSize,
+      total_pages: Math.max(1, Math.ceil(total / pageSize)),
+      bookmarks,
+    });
   }
 
   return jsonResponse(bookmarks);
@@ -767,12 +798,16 @@ function renderWebApp(title: string, authorized: boolean): string {
       <div class="flex items-center justify-between mb-4">
         <div class="text-xs text-slate-500">
           共 <span id="bookmark-count" class="font-bold text-slate-900">0</span> 条书签
+          <span id="page-indicator" class="ml-2 text-slate-400"></span>
         </div>
       </div>
 
       <div id="bookmarks-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <div class="col-span-full py-16 text-center text-slate-400 text-sm">正在加载书签...</div>
       </div>
+
+      <!-- 分页操作栏 -->
+      <div id="pagination-bar" class="mt-8 mb-6 flex items-center justify-center gap-2 text-xs select-none"></div>
     </main>
   </div>
 
@@ -813,9 +848,13 @@ function renderWebApp(title: string, authorized: boolean): string {
   <script>
     let currentCategoryId = null;
     let categoriesList = [];
+    let currentPage = 1;
+    const pageSize = 60;
+    let totalPages = 1;
+    let totalBookmarks = 0;
 
     async function loadData() {
-      await Promise.all([loadCategories(), loadBookmarks()]);
+      await Promise.all([loadCategories(), loadBookmarks(1)]);
     }
 
     async function loadCategories() {
@@ -836,21 +875,33 @@ function renderWebApp(title: string, authorized: boolean): string {
       }
     }
 
-    async function loadBookmarks() {
+    async function loadBookmarks(page = 1) {
+      currentPage = page;
       const search = document.getElementById('search-input').value.trim();
-      let url = '/api/bookmarks?';
+      let url = \`/api/bookmarks?page=\${currentPage}&limit=\${pageSize}&\`;
       if (search) url += 'search=' + encodeURIComponent(search) + '&';
       if (currentCategoryId !== null) url += 'category_id=' + currentCategoryId + '&';
 
       const res = await fetch(url);
       if (res.ok) {
-        const bookmarks = await res.json();
-        document.getElementById('bookmark-count').textContent = bookmarks.length;
+        const data = await res.json();
+        const bookmarks = Array.isArray(data) ? data : (data.bookmarks || []);
+        totalBookmarks = typeof data.total === 'number' ? data.total : bookmarks.length;
+        totalPages = typeof data.total_pages === 'number' ? data.total_pages : Math.max(1, Math.ceil(totalBookmarks / pageSize));
+
+        document.getElementById('bookmark-count').textContent = totalBookmarks.toLocaleString();
+        const indicator = document.getElementById('page-indicator');
+        if (indicator) {
+          indicator.textContent = totalPages > 1 ? \`(第 \${currentPage} / \${totalPages} 页)\` : '';
+        }
+
         const grid = document.getElementById('bookmarks-grid');
         if (bookmarks.length === 0) {
           grid.innerHTML = '<div class="col-span-full py-16 text-center text-slate-400 text-sm">暂无符合条件的书签</div>';
+          renderPagination();
           return;
         }
+
         grid.innerHTML = bookmarks.map(b => \`
           <div class="group bg-white rounded-2xl border border-slate-200/80 hover:border-blue-400 p-4 shadow-xs hover:shadow-md transition flex flex-col justify-between">
             <div>
@@ -869,7 +920,32 @@ function renderWebApp(title: string, authorized: boolean): string {
             </div>
           </div>
         \`).join('');
+
+        renderPagination();
       }
+    }
+
+    function renderPagination() {
+      const bar = document.getElementById('pagination-bar');
+      if (!bar) return;
+      if (totalPages <= 1) {
+        bar.innerHTML = '';
+        return;
+      }
+
+      bar.innerHTML = \`
+        <button onclick="goToPage(1)" \${currentPage === 1 ? 'disabled class="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-300 cursor-not-allowed"' : 'class="px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 transition cursor-pointer"'}>首页</button>
+        <button onclick="goToPage(\${currentPage - 1})" \${currentPage === 1 ? 'disabled class="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-300 cursor-not-allowed"' : 'class="px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 transition cursor-pointer"'}>上一页</button>
+        <span class="px-3 text-slate-600 font-medium">第 \${currentPage} / \${totalPages} 页</span>
+        <button onclick="goToPage(\${currentPage + 1})" \${currentPage >= totalPages ? 'disabled class="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-300 cursor-not-allowed"' : 'class="px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 transition cursor-pointer"'}>下一页</button>
+        <button onclick="goToPage(\${totalPages})" \${currentPage >= totalPages ? 'disabled class="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-300 cursor-not-allowed"' : 'class="px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 transition cursor-pointer"'}>末页</button>
+      \`;
+    }
+
+    function goToPage(page) {
+      if (page < 1 || page > totalPages || page === currentPage) return;
+      loadBookmarks(page);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
     function selectCategory(id) {
@@ -879,11 +955,15 @@ function renderWebApp(title: string, authorized: boolean): string {
       });
       const activeBtn = document.getElementById(id === null ? 'cat-all' : id === -1 ? 'cat-none' : 'cat-' + id);
       if (activeBtn) activeBtn.className = 'w-full text-left px-3 py-2 rounded-lg font-semibold bg-blue-50 text-blue-600 transition';
-      loadBookmarks();
+      loadBookmarks(1);
     }
 
+    let searchDebounceTimer = null;
     document.getElementById('search-input').addEventListener('input', () => {
-      loadBookmarks();
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => {
+        loadBookmarks(1);
+      }, 250);
     });
 
     function openAddModal() {

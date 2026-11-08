@@ -239,7 +239,8 @@ async function loadCloudBookmarks() {
 
     const res = await fetch(`${workerConfig.workerUrl}/api/bookmarks`, { headers });
     if (res.ok) {
-      cachedBookmarks = await res.json();
+      const data = await res.json();
+      cachedBookmarks = Array.isArray(data) ? data : (data.bookmarks || []);
       renderSearchResults(cachedBookmarks);
     } else {
       searchResults.innerHTML = '<div style="text-align: center; color: #ef4444; padding: 20px 0;">拉取失败，请检查配置与网络</div>';
