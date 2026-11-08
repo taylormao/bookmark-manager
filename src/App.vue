@@ -734,8 +734,18 @@ async function handleFileSelected(event: Event) {
   reader.onload = async (e) => {
     const content = e.target?.result as string;
     try {
-      const count: number = await invoke("import_bookmarks_html", { content });
-      alert(`导入成功！共导入 ${count} 条书签及分类结构。`);
+      const overwrite = confirm(
+        "是否需要清空现有数据后全新导入？\n\n" +
+        "• 点击【确定】：清空本地现有全部书签与分类，按此文件全新完整导入；\n" +
+        "• 点击【取消】：保留现有数据，仅增量导入新书签（自动跳过已存在的重复项）。"
+      );
+      const res: { total: number; inserted: number; skipped: number } = await invoke("import_bookmarks_html", { content, overwrite });
+      alert(
+        `导入完成！\n\n` +
+        `• 文件内总条目: ${res.total} 条\n` +
+        `• 本次新增写入: ${res.inserted} 条\n` +
+        `• 已存在自动跳过: ${res.skipped} 条`
+      );
       refreshAll();
     } catch (err) {
       alert("导入失败: " + err);

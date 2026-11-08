@@ -587,11 +587,21 @@ impl Database {
     pub fn import_netscape_bookmarks(
         &self,
         items: &[crate::netscape::ImportedBookmark],
-    ) -> Result<usize> {
+        overwrite: bool,
+    ) -> Result<crate::models::ImportResult> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let now = chrono::Utc::now().timestamp();
-        let mut count = 0;
+
+        if overwrite {
+            tx.execute("DELETE FROM bookmark_tags", [])?;
+            tx.execute("DELETE FROM bookmarks", [])?;
+            tx.execute("DELETE FROM categories", [])?;
+            tx.execute("DELETE FROM tags", [])?;
+        }
+
+        let mut inserted = 0;
+        let mut skipped = 0;
 
         for item in items {
             let mut parent_id: Option<i64> = None;
@@ -637,6 +647,7 @@ impl Database {
 
             let bm_id = match existing_id {
                 Ok(id) => {
+                    skipped += 1;
                     if parent_id.is_some() {
                         let _ = tx.execute(
                             "UPDATE bookmarks SET category_id = coalesce(category_id, ?1) WHERE id = ?2 AND category_id IS NULL",
@@ -651,7 +662,7 @@ impl Database {
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                         params![item.title, item.url, norm_key, item.icon, parent_id, created_at, now],
                     )?;
-                    count += 1;
+                    inserted += 1;
                     tx.last_insert_rowid()
                 }
             };
@@ -672,12 +683,14 @@ impl Database {
                     params![bm_id, tag_id],
                 )?;
             }
-
-            count += 1;
         }
 
         tx.commit()?;
-        Ok(count)
+        Ok(crate::models::ImportResult {
+            total: items.len(),
+            inserted,
+            skipped,
+        })
     }
 
     // --- 系统设置项（代理设置等） ---

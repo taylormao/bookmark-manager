@@ -78,3 +78,11 @@ pub struct BookmarkFilter {
     pub check_note: Option<String>,
     pub sort_by: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportResult {
+    pub total: usize,
+    pub inserted: usize,
+    pub skipped: usize,
+}
+

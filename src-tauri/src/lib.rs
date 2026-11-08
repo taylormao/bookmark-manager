@@ -163,9 +163,16 @@ fn delete_bookmark(id: i64, state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn import_bookmarks_html(content: String, state: State<'_, AppState>) -> Result<usize, String> {
+fn import_bookmarks_html(
+    content: String,
+    overwrite: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<crate::models::ImportResult, String> {
     let items = netscape::parse_netscape_html(&content);
-    state.db.import_netscape_bookmarks(&items).map_err(|e| e.to_string())
+    state
+        .db
+        .import_netscape_bookmarks(&items, overwrite.unwrap_or(false))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
