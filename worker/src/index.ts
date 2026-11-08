@@ -325,85 +325,206 @@ async function handleSyncPull(url: URL, env: Env): Promise<Response> {
   });
 }
 
-// 双向增量同步推送与合并
+// 双向增量同步推送与合并（使用 D1 batch 事务批量合并，严格控制子请求在 8 次以内，彻底杜绝 1101 CPU 超时）
 async function handleSyncPush(request: Request, env: Env): Promise<Response> {
   let payload: any;
   try {
     payload = await request.json();
-  } catch {
-    return jsonResponse({ error: "Invalid JSON payload" }, 400);
+  } catch (e: any) {
+    return jsonResponse({ error: "Invalid JSON payload: " + e.message }, 400);
   }
 
   const clientCategories: any[] = payload.categories || [];
   const clientBookmarks: any[] = payload.bookmarks || [];
   const now = Math.floor(Date.now() / 1000);
 
-  // 1. 批量合并分类
-  for (const c of clientCategories) {
-    if (!c.name) continue;
-    const existing = await env.DB.prepare("SELECT id, updated_at FROM categories WHERE name = ? COLLATE NOCASE").bind(c.name).first<any>();
-    if (!existing) {
-      await env.DB.prepare("INSERT INTO categories (name, parent_id, sort_order, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?)")
-        .bind(c.name, c.parent_id || null, c.sort_order || 0, c.updated_at || now, c.is_deleted ? 1 : 0)
-        .run();
-    } else if ((c.updated_at || 0) > existing.updated_at) {
-      await env.DB.prepare("UPDATE categories SET parent_id = ?, sort_order = ?, updated_at = ?, is_deleted = ? WHERE id = ?")
-        .bind(c.parent_id || null, c.sort_order || 0, c.updated_at || now, c.is_deleted ? 1 : 0, existing.id)
-        .run();
-    }
-  }
+  try {
+    // 1. 批量合并分类 (如果包含分类)
+    if (clientCategories.length > 0) {
+      const catNames = Array.from(new Set(clientCategories.map(c => c.name).filter(Boolean)));
+      if (catNames.length > 0) {
+        const catPlaceholders = catNames.map(() => "?").join(",");
+        const existingCats = await env.DB.prepare(
+          `SELECT id, name, updated_at FROM categories WHERE name IN (${catPlaceholders}) COLLATE NOCASE`
+        ).bind(...catNames).all<any>();
 
-  // 建立远程分类名称 -> 远程 id 的映射表，杜绝外键错误
-  const allCats = await env.DB.prepare("SELECT id, name FROM categories WHERE is_deleted = 0").all<any>();
-  const catNameToId = new Map<string, number>();
-  for (const c of (allCats.results || []) as any[]) {
-    if (c.name) catNameToId.set(c.name.toLowerCase(), c.id);
-  }
+        const existingCatMap = new Map<string, { id: number; updated_at: number }>();
+        for (const ec of (existingCats.results || [])) {
+          if (ec.name) existingCatMap.set(ec.name.toLowerCase(), { id: ec.id, updated_at: ec.updated_at });
+        }
 
-  // 2. 批量合并书签（支持分类名称动态映射）
-  for (const b of clientBookmarks) {
-    if (!b.url) continue;
-    const urlKey = (b.url_key || b.url).replace(/\/+$/, "");
-    const targetCatId = b.category_name ? (catNameToId.get(b.category_name.toLowerCase()) || null) : null;
+        const catStmts: any[] = [];
+        const processedNames = new Set<string>();
 
-    const existing = await env.DB.prepare("SELECT id, updated_at FROM bookmarks WHERE url_key = ?").bind(urlKey).first<any>();
+        for (const c of clientCategories) {
+          if (!c.name) continue;
+          const lowerName = c.name.toLowerCase();
+          if (processedNames.has(lowerName)) continue;
+          processedNames.add(lowerName);
 
-    let bookmarkId: number;
-    if (!existing) {
-      const res = await env.DB.prepare(
-        `INSERT INTO bookmarks (title, url, url_key, icon, category_id, valid, created_at, updated_at, is_deleted)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).bind(b.title || b.url, b.url, urlKey, b.icon || null, targetCatId, b.valid ?? 1, b.created_at || now, b.updated_at || now, b.is_deleted ? 1 : 0).run();
-      bookmarkId = res.meta.last_row_id;
-    } else {
-      bookmarkId = existing.id;
-      if ((b.updated_at || 0) >= existing.updated_at) {
-        await env.DB.prepare(
-          `UPDATE bookmarks SET title = ?, url = ?, icon = coalesce(?, icon), category_id = ?, valid = ?, updated_at = ?, is_deleted = ?
-           WHERE id = ?`
-        ).bind(b.title || b.url, b.url, b.icon || null, targetCatId, b.valid ?? 1, b.updated_at || now, b.is_deleted ? 1 : 0, bookmarkId).run();
-      }
-    }
+          const ex = existingCatMap.get(lowerName);
+          if (!ex) {
+            catStmts.push(
+              env.DB.prepare(
+                "INSERT INTO categories (name, parent_id, sort_order, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?)"
+              ).bind(c.name, c.parent_id || null, c.sort_order || 0, c.updated_at || now, c.is_deleted ? 1 : 0)
+            );
+          } else if ((c.updated_at || 0) > ex.updated_at) {
+            catStmts.push(
+              env.DB.prepare(
+                "UPDATE categories SET parent_id = ?, sort_order = ?, updated_at = ?, is_deleted = ? WHERE id = ?"
+              ).bind(c.parent_id || null, c.sort_order || 0, c.updated_at || now, c.is_deleted ? 1 : 0, ex.id)
+            );
+          }
+        }
 
-    // 标签更新
-    if (Array.isArray(b.tags) && !b.is_deleted && b.tags.length > 0) {
-      for (const t of b.tags) {
-        const tagName = String(t).trim();
-        if (!tagName) continue;
-        await env.DB.prepare("INSERT OR IGNORE INTO tags (name) VALUES (?)").bind(tagName).run();
-        const tagRow = await env.DB.prepare("SELECT id FROM tags WHERE name = ? COLLATE NOCASE").bind(tagName).first<any>();
-        if (tagRow) {
-          await env.DB.prepare("INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id) VALUES (?, ?)").bind(bookmarkId, tagRow.id).run();
+        if (catStmts.length > 0) {
+          await env.DB.batch(catStmts);
         }
       }
     }
-  }
 
-  return jsonResponse({
-    success: true,
-    server_time: now,
-    message: "Sync merged successfully",
-  });
+    // 2. 批量合并书签 (如果包含书签)
+    if (clientBookmarks.length > 0) {
+      const validBms = clientBookmarks.filter(b => !!b.url);
+      if (validBms.length > 0) {
+        // 建立远程分类名称 -> 远程 id 的映射表，杜绝外键错误
+        const allCats = await env.DB.prepare("SELECT id, name FROM categories WHERE is_deleted = 0").all<any>();
+        const catNameToId = new Map<string, number>();
+        for (const c of (allCats.results || [])) {
+          if (c.name) catNameToId.set(c.name.toLowerCase(), c.id);
+        }
+
+        // 去重相同批次中具有相同 urlKey 的书签，保留更新时间较新者
+        const bmMapByUrlKey = new Map<string, any>();
+        for (const b of validBms) {
+          const key = (b.url_key || b.url).replace(/\/+$/, "");
+          if (!key) continue;
+          const prev = bmMapByUrlKey.get(key);
+          if (!prev || (b.updated_at || 0) >= (prev.updated_at || 0)) {
+            bmMapByUrlKey.set(key, b);
+          }
+        }
+
+        const uniqueBms = Array.from(bmMapByUrlKey.values());
+        const urlKeys = Array.from(bmMapByUrlKey.keys());
+
+        if (urlKeys.length > 0) {
+          // 一次性查出已有书签，避免 N 次查询
+          const bmPlaceholders = urlKeys.map(() => "?").join(",");
+          const existingBms = await env.DB.prepare(
+            `SELECT id, url_key, updated_at FROM bookmarks WHERE url_key IN (${bmPlaceholders})`
+          ).bind(...urlKeys).all<any>();
+
+          const existingBmMap = new Map<string, { id: number; updated_at: number }>();
+          for (const eb of (existingBms.results || [])) {
+            if (eb.url_key) existingBmMap.set(eb.url_key, { id: eb.id, updated_at: eb.updated_at });
+          }
+
+          const bmStmts: any[] = [];
+
+          for (const b of uniqueBms) {
+            const urlKey = (b.url_key || b.url).replace(/\/+$/, "");
+            const targetCatId = b.category_name ? (catNameToId.get(b.category_name.toLowerCase()) || null) : null;
+            const ex = existingBmMap.get(urlKey);
+
+            if (!ex) {
+              bmStmts.push(
+                env.DB.prepare(
+                  `INSERT INTO bookmarks (title, url, url_key, icon, category_id, valid, created_at, updated_at, is_deleted)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                ).bind(b.title || b.url, b.url, urlKey, b.icon || null, targetCatId, b.valid ?? 1, b.created_at || now, b.updated_at || now, b.is_deleted ? 1 : 0)
+              );
+            } else if ((b.updated_at || 0) >= ex.updated_at) {
+              bmStmts.push(
+                env.DB.prepare(
+                  `UPDATE bookmarks SET title = ?, url = ?, icon = coalesce(?, icon), category_id = ?, valid = ?, updated_at = ?, is_deleted = ?
+                   WHERE id = ?`
+                ).bind(b.title || b.url, b.url, b.icon || null, targetCatId, b.valid ?? 1, b.updated_at || now, b.is_deleted ? 1 : 0, ex.id)
+              );
+            }
+          }
+
+          if (bmStmts.length > 0) {
+            await env.DB.batch(bmStmts);
+          }
+
+          // 3. 批量合并标签
+          const allTagNamesSet = new Set<string>();
+          for (const b of uniqueBms) {
+            if (Array.isArray(b.tags) && !b.is_deleted) {
+              for (const t of b.tags) {
+                const trimmed = String(t).trim();
+                if (trimmed) allTagNamesSet.add(trimmed);
+              }
+            }
+          }
+
+          if (allTagNamesSet.size > 0) {
+            const allTagNames = Array.from(allTagNamesSet);
+            // 1) 批量忽略插入标签表
+            const tagInsertStmts = allTagNames.map(t => env.DB.prepare("INSERT OR IGNORE INTO tags (name) VALUES (?)").bind(t));
+            await env.DB.batch(tagInsertStmts);
+
+            // 2) 一次性拉取所有标签 ID
+            const tagPlaceholders = allTagNames.map(() => "?").join(",");
+            const tagRows = await env.DB.prepare(
+              `SELECT id, name FROM tags WHERE name IN (${tagPlaceholders}) COLLATE NOCASE`
+            ).bind(...allTagNames).all<any>();
+
+            const tagNameToId = new Map<string, number>();
+            for (const tr of (tagRows.results || [])) {
+              if (tr.name) tagNameToId.set(tr.name.toLowerCase(), tr.id);
+            }
+
+            // 3) 一次性拉取这批书签的最新 ID
+            const allUpdatedBms = await env.DB.prepare(
+              `SELECT id, url_key FROM bookmarks WHERE url_key IN (${bmPlaceholders})`
+            ).bind(...urlKeys).all<any>();
+
+            const bmKeyToId = new Map<string, number>();
+            for (const rb of (allUpdatedBms.results || [])) {
+              if (rb.url_key) bmKeyToId.set(rb.url_key, rb.id);
+            }
+
+            // 4) 批量插入书签标签关联
+            const btStmts: any[] = [];
+            for (const b of uniqueBms) {
+              if (!Array.isArray(b.tags) || b.is_deleted || b.tags.length === 0) continue;
+              const urlKey = (b.url_key || b.url).replace(/\/+$/, "");
+              const bmId = bmKeyToId.get(urlKey);
+              if (!bmId) continue;
+
+              for (const t of b.tags) {
+                const tagId = tagNameToId.get(String(t).trim().toLowerCase());
+                if (tagId) {
+                  btStmts.push(
+                    env.DB.prepare("INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id) VALUES (?, ?)").bind(bmId, tagId)
+                  );
+                }
+              }
+            }
+
+            if (btStmts.length > 0) {
+              await env.DB.batch(btStmts);
+            }
+          }
+        }
+      }
+    }
+
+    return jsonResponse({
+      success: true,
+      server_time: now,
+      message: "Sync merged successfully",
+    });
+  } catch (err: any) {
+    return jsonResponse({
+      success: false,
+      error: `D1 合并执行异常: ${err.message || String(err)}`,
+      stack: err.stack,
+    }, 500);
+  }
 }
 
 // 清空云端所有收藏与分类数据（用于全新覆盖上传前清空远端）

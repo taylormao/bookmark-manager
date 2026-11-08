@@ -132,22 +132,50 @@ pub async fn perform_two_way_sync(db: &Database) -> Result<SyncResult, String> {
 
     let pushed_count = local_cats.len() + local_bms.len();
 
-    // 2. 推送本地变更到 Cloudflare (分批推送，每批 50 条)
+    // 2. 推送本地变更到 Cloudflare (分类优先单独推送，书签分批推送每批 35 条)
     if pushed_count > 0 {
         let push_url = format!("{}/api/sync", worker_url);
-        const CHUNK_SIZE: usize = 50;
 
-        let mut cats_to_send = Some(std::mem::take(&mut local_cats));
-        let bm_chunks: Vec<Vec<CloudBookmark>> = if local_bms.is_empty() {
-            vec![Vec::new()]
-        } else {
-            local_bms.chunks(CHUNK_SIZE).map(|c| c.to_vec()).collect()
-        };
+        // 2.1 优先推送分类
+        if !local_cats.is_empty() {
+            let cat_payload = CloudSyncPushPayload {
+                categories: std::mem::take(&mut local_cats),
+                bookmarks: Vec::new(),
+            };
 
-        for chunk in bm_chunks {
+            let make_cat_req = |c: &reqwest::Client| {
+                let mut req = c.post(&push_url).json(&cat_payload);
+                if !token.is_empty() {
+                    req = req.header("Authorization", format!("Bearer {}", token));
+                }
+                req
+            };
+
+            let mut push_res = make_cat_req(&client).send().await;
+            if push_res.as_ref().map(|r| !r.status().is_success()).unwrap_or(true) {
+                if let Some(ref dc) = direct_fallback_client {
+                    if let Ok(dr) = make_cat_req(dc).send().await {
+                        if dr.status().is_success() {
+                            push_res = Ok(dr);
+                        }
+                    }
+                }
+            }
+
+            let res = push_res.map_err(|e| format_sync_net_err("推送分类至 Cloudflare 失败", e))?;
+            if !res.status().is_success() {
+                let status = res.status();
+                let text = res.text().await.unwrap_or_default();
+                return Err(format!("云端合并分类返回错误 ({}): {}", status, text));
+            }
+        }
+
+        // 2.2 分批推送书签（每批 35 条，严格控制 D1 batch 事务规模）
+        const CHUNK_SIZE: usize = 35;
+        for chunk in local_bms.chunks(CHUNK_SIZE) {
             let payload = CloudSyncPushPayload {
-                categories: cats_to_send.take().unwrap_or_default(),
-                bookmarks: chunk,
+                categories: Vec::new(),
+                bookmarks: chunk.to_vec(),
             };
 
             let make_push_req = |c: &reqwest::Client| {
@@ -299,20 +327,57 @@ pub async fn perform_wipe_and_push_all(db: &Database) -> Result<SyncResult, Stri
 
     let pushed_count = local_cats.len() + local_bms.len();
     let push_url = format!("{}/api/sync", worker_url);
-    const CHUNK_SIZE: usize = 50;
+    let mut latest_server_time = chrono::Utc::now().timestamp();
 
-    let mut cats_to_send = Some(std::mem::take(&mut local_cats));
+    // 2.1 优先推送全量分类
+    if !local_cats.is_empty() {
+        let cat_payload = CloudSyncPushPayload {
+            categories: std::mem::take(&mut local_cats),
+            bookmarks: Vec::new(),
+        };
+
+        let make_cat_req = |c: &reqwest::Client| {
+            let mut req = c.post(&push_url).json(&cat_payload);
+            if !token.is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", token));
+            }
+            req
+        };
+
+        let mut push_res = make_cat_req(&client).send().await;
+        if push_res.as_ref().map(|r| !r.status().is_success()).unwrap_or(true) {
+            if let Some(ref dc) = direct_fallback_client {
+                if let Ok(dr) = make_cat_req(dc).send().await {
+                    if dr.status().is_success() {
+                        push_res = Ok(dr);
+                    }
+                }
+            }
+        }
+
+        let res = push_res.map_err(|e| format_sync_net_err("推送分类至 Cloudflare 失败", e))?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            return Err(format!("云端合并分类返回错误 ({}): {}", status, text));
+        }
+
+        if let Ok(push_resp) = res.json::<CloudSyncPushResponse>().await {
+            latest_server_time = push_resp.server_time;
+        }
+    }
+
+    // 2.2 分批推送书签（每批 35 条，严格控制 D1 batch 事务规模）
+    const CHUNK_SIZE: usize = 35;
     let bm_chunks: Vec<Vec<CloudBookmark>> = if local_bms.is_empty() {
-        vec![Vec::new()]
+        vec![]
     } else {
         local_bms.chunks(CHUNK_SIZE).map(|c| c.to_vec()).collect()
     };
 
-    let mut latest_server_time = chrono::Utc::now().timestamp();
-
     for chunk in bm_chunks {
         let payload = CloudSyncPushPayload {
-            categories: cats_to_send.take().unwrap_or_default(),
+            categories: Vec::new(),
             bookmarks: chunk,
         };
 

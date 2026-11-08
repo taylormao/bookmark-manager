@@ -545,6 +545,10 @@ function openEditModal(bm: Bookmark) {
 }
 
 async function submitBookmark() {
+  if (!isTauriEnv.value) {
+    alert("当前处于普通浏览器网页环境，无法调用本地 Tauri 桌面端引擎。\n\n请在本地终端执行 `bun run tauri dev` 启动桌面端应用程序窗口！");
+    return;
+  }
   if (!bookmarkForm.url.trim()) {
     alert("请输入有效的网址");
     return;
@@ -624,6 +628,10 @@ async function handleTestProxy() {
 }
 
 async function saveProxyConfig() {
+  if (!isTauriEnv.value) {
+    alert("当前处于普通浏览器网页环境，无法调用本地 Tauri 桌面端引擎。\n\n请在本地终端执行 `bun run tauri dev` 启动桌面端应用程序窗口！");
+    return;
+  }
   try {
     await invoke("save_proxy_settings", {
       config: {
