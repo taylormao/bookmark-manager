@@ -684,14 +684,19 @@ async function runBatchValidation() {
 
 // 一键查重合并
 async function handleMergeDuplicates() {
+  if (!isTauriEnv.value) {
+    alert("当前处于普通浏览器网页环境，无法调用本地引擎");
+    return;
+  }
+  await checkDuplicatesCount();
   if (duplicateCount.value === 0) {
-    alert("暂无重复书签");
+    showToast("经检测，当前全部书签均为唯一网址，暂无重复项！");
     return;
   }
   if (confirm(`检测到约 ${duplicateCount.value} 条重复书签，合并将保留最早添加记录并自动合并标签，是否继续？`)) {
     try {
       const mergedCount: number = await invoke("merge_duplicates");
-      alert(`成功合并并清理了 ${mergedCount} 条重复书签！`);
+      showToast(`成功合并并清理了 ${mergedCount} 条重复书签！`);
       refreshAll();
     } catch (e) {
       alert("合并失败: " + e);
@@ -1232,15 +1237,19 @@ onMounted(async () => {
             <option value="url_asc">域名/网址 (A-Z)</option>
           </select>
 
-          <!-- 重复书签合并提示按钮 -->
+          <!-- 重复书签合并/查重按钮（常驻显示：无重复时展示“书签查重”，有重复时高亮“合并重复 (N)”） -->
           <button
-            v-if="duplicateCount > 0"
             @click="handleMergeDuplicates"
-            class="flex items-center gap-1.5 bg-purple-50 text-purple-700 border border-purple-200 text-xs font-semibold px-3 py-2 rounded-lg hover:bg-purple-100 transition cursor-pointer"
-            title="点击合并重复书签（保留最早添加并合并标签）"
+            class="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg transition cursor-pointer"
+            :class="[
+              duplicateCount > 0
+                ? 'bg-purple-100 text-purple-700 border border-purple-300 hover:bg-purple-200 shadow-xs'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
+            ]"
+            :title="duplicateCount > 0 ? `检测到 ${duplicateCount} 条重复书签，点击合并` : '点击一键检测并清理重复书签'"
           >
-            <CopyCheck class="w-4 h-4 text-purple-600" />
-            <span>合并重复 ({{ duplicateCount }})</span>
+            <CopyCheck class="w-4 h-4" :class="duplicateCount > 0 ? 'text-purple-600' : 'text-slate-500'" />
+            <span>{{ duplicateCount > 0 ? `合并重复 (${duplicateCount})` : '书签查重' }}</span>
           </button>
 
           <!-- 批量校验按钮 -->
